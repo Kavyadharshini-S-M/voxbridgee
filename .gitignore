@@ -1,0 +1,36 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.env
+debug.keystore
+
+# Large model weights, checkpoints, archives and downloads
+downloads/
+models/
+venv_conversion/
+tools/model_conversion/venv/
+*.pth
+*.zip
+*.onnx
+*.apk
+test*.wav
+
+# Bundled offline STT/TTS model weights
+app/src/main/assets/models/**/*.onnx
+
+# Stray local artifact, not referenced by build.gradle.kts.
+app/libs/*.bak
+
