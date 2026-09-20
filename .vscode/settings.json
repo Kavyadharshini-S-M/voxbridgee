@@ -1,0 +1,6 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/venv_conversion/Scripts/python.exe",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/venv_conversion/Lib/site-packages"
+  ]
+}

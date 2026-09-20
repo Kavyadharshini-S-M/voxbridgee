@@ -1,5 +1,6 @@
 package com.example.transport
 
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothServerSocket
@@ -17,9 +18,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.NetworkInfo
+import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pDeviceList
+import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
+import android.net.wifi.WpsInfo
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
@@ -44,6 +49,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.BufferedWriter
+import java.io.IOException
 import java.io.Closeable
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -263,12 +269,20 @@ class TacticalMeshTransport(
         }
     }
 
+    private fun isP2pSubnet(ip: String): Boolean = ip.startsWith("192.168.49.")
+
     private fun startBeaconBroadcaster() {
         beaconBroadcastJob?.cancel()
         beaconBroadcastJob = scope.launch(Dispatchers.IO) {
+            Log.i("TacticalMesh", "[LAN_BEACON] Secondary shared-router UDP broadcaster active (secondary fallback)")
             while (isActive) {
                 try {
                     val localIp = DeviceTelemetryProvider.getLocalIpv4Address()
+                    if (localIp == "127.0.0.1" || localIp == "0.0.0.0") {
+                        delay(2000)
+                        continue
+                    }
+
                     val customName = myCallsign
                     val hwId = DeviceTelemetryProvider.getHardwareId()
                     val beaconObj = JSONObject().apply {
@@ -327,7 +341,9 @@ class TacticalMeshTransport(
 
                 while (isActive) {
                     val client = tcpServerSocket?.accept() ?: break
-                    Log.i("TacticalMesh", "Inbound TCP connection from ${client.inetAddress.hostAddress}")
+                    val remoteIp = client.inetAddress.hostAddress ?: ""
+                    val connType = if (isP2pSubnet(remoteIp)) "P2P_DIRECT" else "LAN_BEACON"
+                    Log.i("TacticalMesh", "[$connType] Inbound TCP connection from $remoteIp")
                     scope.launch(Dispatchers.IO) {
                         handleInboundTcpConnection(client)
                     }
@@ -340,25 +356,25 @@ class TacticalMeshTransport(
 
     private suspend fun handleInboundTcpConnection(socket: Socket) = withContext(Dispatchers.IO) {
         val key = socket.inetAddress.hostAddress ?: "tcp_${socket.port}"
+        val connType = if (isP2pSubnet(key)) "P2P_DIRECT" else "LAN_BEACON"
         try {
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
             val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
 
-            // Retain as one of possibly several simultaneous duplex links (mesh relay
-            // needs to keep every peer's socket open at once, not just the latest one).
+            // Retain as one of possibly several simultaneous duplex links
             peerLinks[key] = PeerLink(key, TransportProtocol.WIFI_DIRECT, writer, socket)
             refreshConnectedPeersState()
+            Log.i("TacticalMesh", "[$connType] TCP link established with $key")
 
             while (isActive && !socket.isClosed) {
                 val line = reader.readLine() ?: break
                 handleIncomingRawJson(line, key)
             }
         } catch (e: Exception) {
-            Log.w("TacticalMesh", "TCP client socket closed: ${e.message}")
+            Log.w("TacticalMesh", "[$connType] Inbound TCP socket closed: ${e.message}")
         } finally {
             peerLinks.remove(key)
             refreshConnectedPeersState()
-            try { socket.close() } catch (e: Exception) {}
         }
     }
 
@@ -366,6 +382,7 @@ class TacticalMeshTransport(
     // Real Bluetooth RFCOMM Server
     // ==========================================
 
+    @SuppressLint("MissingPermission")
     private fun startBluetoothServer() {
         bluetoothServerJob?.cancel()
         bluetoothServerJob = scope.launch(Dispatchers.IO) {
@@ -392,6 +409,7 @@ class TacticalMeshTransport(
         }
     }
 
+    @SuppressLint("MissingPermission")
     private suspend fun handleInboundBluetoothConnection(socket: BluetoothSocket) = withContext(Dispatchers.IO) {
         val key = socket.remoteDevice.address
         try {
@@ -433,6 +451,7 @@ class TacticalMeshTransport(
     // Peer Discovery & Connection Operations
     // ==========================================
 
+    @SuppressLint("MissingPermission")
     override fun startDiscovery(protocol: TransportProtocol) {
         _connectionStatus.value = if (_connectedPeer.value != null) ConnectionStatus.CONNECTED else ConnectionStatus.SEARCHING
         
@@ -516,6 +535,7 @@ class TacticalMeshTransport(
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun stopBleDiscovery() {
         try {
             if (isBleScanning) {
@@ -529,6 +549,7 @@ class TacticalMeshTransport(
         } catch (e: Exception) {}
     }
 
+    @SuppressLint("MissingPermission")
     override fun stopDiscovery() {
         if (_connectionStatus.value == ConnectionStatus.SEARCHING) {
             _connectionStatus.value = if (_connectedPeer.value != null) ConnectionStatus.CONNECTED else ConnectionStatus.DISCONNECTED
@@ -539,71 +560,48 @@ class TacticalMeshTransport(
         } catch (e: Exception) {}
     }
 
+    @SuppressLint("MissingPermission")
     override fun connectToPeer(peer: PeerDevice) {
         scope.launch(Dispatchers.IO) {
             _connectionStatus.value = ConnectionStatus.PAIRING
             try {
                 if (peer.protocol == TransportProtocol.WIFI_DIRECT) {
-                    // Connect real TCP socket to peer's IP:port
-                    val socket = Socket()
-                    socket.connect(InetSocketAddress(peer.address, peer.port), 4000)
-
-                    val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
-                    val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
-
-                    // Keyed by IP so this link coexists with any other peer this node
-                    // is already bridging for (mesh relay needs more than one at once).
-                    val key = peer.address
-                    peerLinks[key] = PeerLink(key, TransportProtocol.WIFI_DIRECT, writer, socket)
-
-                    // Send Handshake
-                    val handshake = JSONObject().apply {
-                        put("type", "HANDSHAKE")
-                        put("nodeId", myNodeId)
-                        put("hardwareId", DeviceTelemetryProvider.getHardwareId())
-                        put("deviceName", myCallsign)
-                        put("callsign", myCallsign)
-                    }
-                    writer.write(handshake.toString() + "\n")
-                    writer.flush()
-
-                    peerMap[key] = peer.copy(isConnected = true)
-                    peerLastSeen[key] = System.currentTimeMillis()
-                    refreshConnectedPeersState()
-                    _connectionStatus.value = ConnectionStatus.CONNECTED
-                    telemetryProvider.updateConnectedPeerInfo(peer.name, peer.signalStrengthDbm, 12)
-
-                    // Launch inbound reader on this client socket
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            while (isActive && !socket.isClosed) {
-                                val line = reader.readLine() ?: break
-                                handleIncomingRawJson(line, key)
-                            }
-                        } finally {
-                            peerLinks.remove(key)
-                            refreshConnectedPeersState()
+                    if (peer.address.contains(":")) {
+                        // Real Wi-Fi Direct Peer-to-Peer Group Formation (Radio-to-Radio, zero router)
+                        Log.i("TacticalMesh", "[P2P_DIRECT] Initiating real WifiP2pManager group connection to MAC ${peer.address}")
+                        val config = WifiP2pConfig().apply {
+                            deviceAddress = peer.address
+                            wps.setup = WpsInfo.PBC
                         }
+                        try {
+                            wifiP2pManager?.connect(wifiP2pChannel, config, object : WifiP2pManager.ActionListener {
+                                override fun onSuccess() {
+                                    Log.i("TacticalMesh", "[P2P_DIRECT] WifiP2pManager connect initiated successfully to ${peer.name}")
+                                }
+                                override fun onFailure(reason: Int) {
+                                    Log.e("TacticalMesh", "[P2P_DIRECT] WifiP2pManager connect failed with reason code: $reason")
+                                    if (peerLinks.isEmpty()) _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                                }
+                            })
+                        } catch (e: SecurityException) {
+                            Log.e("TacticalMesh", "[P2P_DIRECT] Missing NEARBY_WIFI_DEVICES / location permission: ${e.message}")
+                            if (peerLinks.isEmpty()) _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                        } catch (e: Exception) {
+                            Log.e("TacticalMesh", "[P2P_DIRECT] WifiP2pManager connect error: ${e.message}", e)
+                            if (peerLinks.isEmpty()) _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                        }
+                    } else {
+                        // Direct IP connection (e.g. manual IP entry or LAN beacon)
+                        val connType = if (isP2pSubnet(peer.address)) "P2P_DIRECT" else "LAN_BEACON"
+                        Log.i("TacticalMesh", "[$connType] Connecting direct TCP socket to ${peer.address}:${peer.port}")
+                        connectTcpSocket(peer.address, peer.port, peer.name, connectionType = connType)
                     }
                 } else {
                     // Connect real Bluetooth RFCOMM socket with fallback
                     val adapter = bluetoothAdapter
                     val device = adapter?.getRemoteDevice(peer.address)
                     if (device != null) {
-                        try {
-                            adapter.cancelDiscovery()
-                        } catch (e: Exception) {}
-
-                        val bSocket = try {
-                            val secureSocket = device.createRfcommSocketToServiceRecord(meshBluetoothUuid)
-                            secureSocket.connect()
-                            secureSocket
-                        } catch (e1: Exception) {
-                            Log.w("TacticalMesh", "Secure RFCOMM failed, attempting insecure RFCOMM: ${e1.message}")
-                            val insecureSocket = device.createInsecureRfcommSocketToServiceRecord(meshBluetoothUuid)
-                            insecureSocket.connect()
-                            insecureSocket
-                        }
+                        val bSocket = createBluetoothRfcommSocket(device)
 
                         val key = peer.address
                         val writer = BufferedWriter(OutputStreamWriter(bSocket.outputStream, Charsets.UTF_8))
@@ -617,6 +615,7 @@ class TacticalMeshTransport(
                             put("hardwareId", DeviceTelemetryProvider.getHardwareId())
                             put("deviceName", myCallsign)
                             put("callsign", myCallsign)
+                            put("connectionType", "BLUETOOTH")
                         }
                         writer.write(handshake.toString() + "\n")
                         writer.flush()
@@ -626,6 +625,7 @@ class TacticalMeshTransport(
                         refreshConnectedPeersState()
                         _connectionStatus.value = ConnectionStatus.CONNECTED
                         telemetryProvider.updateConnectedPeerInfo(peer.name, peer.signalStrengthDbm, 16)
+                        Log.i("TacticalMesh", "[BLUETOOTH] Connected RFCOMM link to ${peer.name} ($key)")
 
                         scope.launch(Dispatchers.IO) {
                             try {
@@ -646,6 +646,158 @@ class TacticalMeshTransport(
             }
         }
     }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun createBluetoothRfcommSocket(device: BluetoothDevice): BluetoothSocket {
+        val adapter = bluetoothAdapter
+        try {
+            if (adapter?.isDiscovering == true) {
+                Log.i("TacticalMesh", "[BLUETOOTH] Canceling active discovery before connection...")
+                adapter.cancelDiscovery()
+                delay(300)
+            } else {
+                try {
+                    adapter?.cancelDiscovery()
+                } catch (e: Exception) {}
+                delay(150)
+            }
+        } catch (e: Exception) {
+            Log.w("TacticalMesh", "[BLUETOOTH] cancelDiscovery error: ${e.message}")
+        }
+
+        var lastException: Exception? = null
+
+        // Method 1: Secure RFCOMM socket via UUID
+        try {
+            Log.i("TacticalMesh", "[BLUETOOTH] Attempting Secure RFCOMM via UUID")
+            val socket = device.createRfcommSocketToServiceRecord(meshBluetoothUuid)
+            socket.connect()
+            Log.i("TacticalMesh", "[BLUETOOTH] Secure RFCOMM connection succeeded")
+            return socket
+        } catch (e: Exception) {
+            Log.w("TacticalMesh", "[BLUETOOTH] Secure RFCOMM failed (${e.message}), trying Insecure RFCOMM...")
+            lastException = e
+        }
+
+        // Method 2: Insecure RFCOMM socket via UUID
+        try {
+            Log.i("TacticalMesh", "[BLUETOOTH] Attempting Insecure RFCOMM via UUID")
+            val socket = device.createInsecureRfcommSocketToServiceRecord(meshBluetoothUuid)
+            socket.connect()
+            Log.i("TacticalMesh", "[BLUETOOTH] Insecure RFCOMM connection succeeded")
+            return socket
+        } catch (e: Exception) {
+            Log.w("TacticalMesh", "[BLUETOOTH] Insecure RFCOMM failed (${e.message}), trying Reflection fallback...")
+            lastException = e
+        }
+
+        // Method 3: Reflection fallback (bypasses SDP lookup and connects directly to RFCOMM channel)
+        // Fixes "Null file descriptor returned" on Motorola edge 30 and various Android 11+ OEM Bluetooth stacks
+        val channelsToTry = intArrayOf(1, 2, 3)
+        for (channel in channelsToTry) {
+            try {
+                Log.i("TacticalMesh", "[BLUETOOTH] Attempting Reflection Insecure RFCOMM on channel $channel")
+                val createInsecureMethod = device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+                val socket = createInsecureMethod.invoke(device, channel) as BluetoothSocket
+                socket.connect()
+                Log.i("TacticalMesh", "[BLUETOOTH] Reflection Insecure RFCOMM succeeded on channel $channel")
+                return socket
+            } catch (e: Exception) {
+                Log.w("TacticalMesh", "[BLUETOOTH] Reflection Insecure RFCOMM channel $channel failed: ${e.message}")
+                lastException = e
+            }
+
+            try {
+                Log.i("TacticalMesh", "[BLUETOOTH] Attempting Reflection Secure RFCOMM on channel $channel")
+                val createMethod = device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+                val socket = createMethod.invoke(device, channel) as BluetoothSocket
+                socket.connect()
+                Log.i("TacticalMesh", "[BLUETOOTH] Reflection Secure RFCOMM succeeded on channel $channel")
+                return socket
+            } catch (e: Exception) {
+                Log.w("TacticalMesh", "[BLUETOOTH] Reflection Secure RFCOMM channel $channel failed: ${e.message}")
+                lastException = e
+            }
+        }
+
+        throw lastException ?: IOException("Failed to establish Bluetooth RFCOMM connection to ${device.address}")
+    }
+
+    private suspend fun connectTcpSocket(ip: String, port: Int, peerDisplayName: String, connectionType: String) = withContext(Dispatchers.IO) {
+        try {
+            val socket = Socket()
+            socket.connect(InetSocketAddress(ip, port), 5000)
+
+            val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+
+            val key = ip
+            peerLinks[key] = PeerLink(key, TransportProtocol.WIFI_DIRECT, writer, socket)
+
+            // Send Handshake
+            val handshake = JSONObject().apply {
+                put("type", "HANDSHAKE")
+                put("nodeId", myNodeId)
+                put("hardwareId", DeviceTelemetryProvider.getHardwareId())
+                put("deviceName", myCallsign)
+                put("callsign", myCallsign)
+                put("connectionType", connectionType)
+            }
+            writer.write(handshake.toString() + "\n")
+            writer.flush()
+
+            val peer = PeerDevice(
+                id = key,
+                name = peerDisplayName,
+                address = key,
+                protocol = TransportProtocol.WIFI_DIRECT,
+                port = port,
+                isConnected = true,
+                signalStrengthDbm = if (connectionType == "P2P_DIRECT") -45 else -65
+            )
+            peerMap[key] = peer
+            peerLastSeen[key] = System.currentTimeMillis()
+            refreshConnectedPeersState()
+            _connectionStatus.value = ConnectionStatus.CONNECTED
+            telemetryProvider.updateConnectedPeerInfo(peerDisplayName, peer.signalStrengthDbm, if (connectionType == "P2P_DIRECT") 8 else 20)
+            Log.i("TacticalMesh", "[$connectionType] Connected TCP link to $peerDisplayName at $ip:$port")
+
+            scope.launch(Dispatchers.IO) {
+                try {
+                    while (isActive && !socket.isClosed) {
+                        val line = reader.readLine() ?: break
+                        handleIncomingRawJson(line, key)
+                    }
+                } finally {
+                    peerLinks.remove(key)
+                    refreshConnectedPeersState()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("TacticalMesh", "[$connectionType] TCP connection failed to $ip:$port (${e.message})")
+            if (peerLinks.isEmpty()) _connectionStatus.value = ConnectionStatus.DISCONNECTED
+        }
+    }
+
+    private fun handleWifiP2pConnectionInfo(info: WifiP2pInfo?) {
+        if (info == null || !info.groupFormed) return
+
+        if (info.isGroupOwner) {
+            Log.i("TacticalMesh", "[P2P_DIRECT] P2P Group formed: This device is Group Owner. Ready to accept clients on port $tcpPort")
+            _connectionStatus.value = ConnectionStatus.CONNECTED
+            telemetryProvider.updateConnectedPeerInfo("P2P Client Linked", -45, 8)
+        } else {
+            val groupOwnerIp = info.groupOwnerAddress?.hostAddress
+            Log.i("TacticalMesh", "[P2P_DIRECT] P2P Group formed: This device is Client. Group Owner IP is $groupOwnerIp")
+            if (!groupOwnerIp.isNullOrBlank()) {
+                scope.launch(Dispatchers.IO) {
+                    delay(600) // Brief delay for Group Owner's TCP server socket to bind
+                    connectTcpSocket(groupOwnerIp, tcpPort, "P2P Group Owner", connectionType = "P2P_DIRECT")
+                }
+            }
+        }
+    }
+
 
     /**
      * Direct connection via manual IP input (e.g. 192.168.43.1 or 192.168.1.100).
@@ -938,6 +1090,7 @@ class TacticalMeshTransport(
         return uuids?.any { it.uuid == meshBluetoothUuid } ?: false
     }
 
+    @SuppressLint("MissingPermission")
     private fun refreshBondedBluetoothPeers() {
         try {
             val adapter = bluetoothAdapter
@@ -974,6 +1127,7 @@ class TacticalMeshTransport(
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun isSelfDevice(peer: PeerDevice): Boolean {
         val myCallsign = telemetryProvider.telemetry.value.nodeCallsign
         val myIp = telemetryProvider.telemetry.value.localIpAddress
@@ -1019,11 +1173,13 @@ class TacticalMeshTransport(
         updateDiscoveredPeers()
     }
 
+    @SuppressLint("MissingPermission")
     private fun registerBluetoothDiscoveryReceiver() {
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothDevice.ACTION_UUID)
             addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
         }
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, intent: Intent?) {
@@ -1034,6 +1190,26 @@ class TacticalMeshTransport(
                                 handleWifiP2pPeers(peerList)
                             }
                         } catch (e: Exception) {}
+                    }
+                    WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
+                        val networkInfo: NetworkInfo? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO, NetworkInfo::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO)
+                        }
+                        if (networkInfo?.isConnected == true) {
+                            Log.i("TacticalMesh", "[P2P_DIRECT] NetworkInfo isConnected -> Requesting Connection Info")
+                            try {
+                                wifiP2pManager?.requestConnectionInfo(wifiP2pChannel) { info ->
+                                    handleWifiP2pConnectionInfo(info)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("TacticalMesh", "[P2P_DIRECT] requestConnectionInfo error: ${e.message}")
+                            }
+                        } else {
+                            Log.d("TacticalMesh", "[P2P_DIRECT] Wi-Fi Direct disconnected or forming")
+                        }
                     }
                     BluetoothDevice.ACTION_FOUND -> {
                         val device = extractBluetoothDeviceExtra(intent) ?: return

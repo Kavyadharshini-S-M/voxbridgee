@@ -304,7 +304,7 @@ class IndicTtsEngine(
                 Log.i(TAG, "Synthesizing via Android System Offline TTS for ${language.englishName}")
                 initAndroidTts()
                 var attempts = 0
-                while (!isAndroidTtsReady && attempts < 30) {
+                while (!isAndroidTtsReady && attempts < 40) {
                     delay(50)
                     attempts++
                 }
@@ -313,45 +313,41 @@ class IndicTtsEngine(
                     try {
                         var textToSpeak = trimmed
                         
-                        // Check if Android system TTS actually has offline voice data for this specific language
-                        val hasOfflineVoice = try {
-                            tts.voices?.any { voice ->
-                                voice.locale.language == language.code && !voice.isNetworkConnectionRequired
-                            } ?: false
+                        // Check if Android system TTS engine supports this language
+                        val langAvailability = try {
+                            tts.isLanguageAvailable(language.locale)
                         } catch (e: Exception) {
-                            false
+                            android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED
                         }
 
                         if (language == SupportedLanguage.ENGLISH) {
                             tts.language = java.util.Locale.ENGLISH
                             textToSpeak = trimmed
-                        } else if (language == SupportedLanguage.HINDI && (hasOfflineVoice || tts.isLanguageAvailable(java.util.Locale("hi", "IN")) >= 0)) {
+                        } else if (langAvailability >= android.speech.tts.TextToSpeech.LANG_AVAILABLE) {
+                            // Native locale is supported by Android TTS engine - speak native script directly!
+                            tts.language = language.locale
+                            textToSpeak = trimmed
+                            Log.i(TAG, "Using native TTS voice for ${language.englishName} (${language.locale})")
+                        } else if (language == SupportedLanguage.MARATHI && tts.isLanguageAvailable(java.util.Locale("hi", "IN")) >= android.speech.tts.TextToSpeech.LANG_AVAILABLE) {
+                            // Marathi Devanagari script can be read naturally by Hindi TTS voice
                             tts.language = java.util.Locale("hi", "IN")
                             textToSpeak = trimmed
-                        } else if (hasOfflineVoice) {
-                            tts.setLanguage(language.locale)
-                            textToSpeak = trimmed
+                            Log.i(TAG, "Using Hindi Devanagari voice for Marathi")
                         } else {
-                            // Regional Indic languages without downloaded voice packs (e.g. Gujarati, Kannada, Malayalam, Odia):
-                            // Use phonetic fallback to ensure loud, clear, spoken speech on 100% of Android phones.
-                            Log.w(TAG, "Locale ${language.locale} voice data not installed locally. Using phonetic speech fallback.")
-                            val hiAvailable = try { tts.isLanguageAvailable(java.util.Locale("hi", "IN")) >= 0 } catch (e: Exception) { false }
-                            if (hiAvailable && language == SupportedLanguage.MARATHI) {
-                                tts.language = java.util.Locale("hi", "IN")
-                                textToSpeak = trimmed
-                            } else {
-                                try {
-                                    val inLocale = java.util.Locale("en", "IN")
-                                    if (tts.isLanguageAvailable(inLocale) >= 0) {
-                                        tts.language = inLocale
-                                    } else {
-                                        tts.language = java.util.Locale.getDefault()
-                                    }
-                                } catch (e: Exception) {
-                                    tts.language = java.util.Locale.getDefault()
+                            // Regional Indic languages without downloaded engine voice pack:
+                            // Use clean phonetic transliteration or English phrase meaning through English TTS.
+                            Log.w(TAG, "Locale ${language.locale} voice not installed in Android TTS (status=$langAvailability). Using phonetic speech fallback.")
+                            try {
+                                val inLocale = java.util.Locale("en", "IN")
+                                if (tts.isLanguageAvailable(inLocale) >= android.speech.tts.TextToSpeech.LANG_AVAILABLE) {
+                                    tts.language = inLocale
+                                } else {
+                                    tts.language = java.util.Locale.ENGLISH
                                 }
-                                textToSpeak = com.example.translation.BundledOfflineTranslator.toPhoneticFallback(trimmed, language)
+                            } catch (e: Exception) {
+                                tts.language = java.util.Locale.ENGLISH
                             }
+                            textToSpeak = com.example.translation.BundledOfflineTranslator.toPhoneticFallback(trimmed, language)
                         }
 
                         if (isAlert) {

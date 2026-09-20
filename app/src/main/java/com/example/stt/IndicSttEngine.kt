@@ -131,7 +131,12 @@ class IndicSttEngine(
      * resulting absolute file path — see the mmap-vs-heap-buffer note in
      * [ensureModelsForLanguage] for why this matters on low-RAM devices.
      */
-    private fun extractAssetToFile(relPath: String): String {
+    /**
+     * Copies `assets/models/$relPath` to internal storage the first time it's needed
+     * and returns the resulting absolute file path. Fails cleanly with null if the
+     * asset does not exist in the APK.
+     */
+    private fun extractAssetToFile(relPath: String): String? {
         val outFile = java.io.File(context.filesDir, "models_cache/$relPath")
         val expectedSize = bundledModelManager.verifiedAssets.value[relPath]?.sizeBytes
         if (!outFile.exists() || (expectedSize != null && outFile.length() != expectedSize)) {
@@ -141,18 +146,11 @@ class IndicSttEngine(
                     outFile.outputStream().use { output -> input.copyTo(output, bufferSize = 1 shl 20) }
                 }
             } catch (e: Exception) {
-                val fallbackPath = if (relPath.endsWith("tokens.txt")) "hi/stt/tokens.txt" else "hi/stt/model.int8.onnx"
-                Log.i(TAG, "Asset models/$relPath not found, using shared multi-lang model models/$fallbackPath")
-                try {
-                    context.assets.open("models/$fallbackPath").use { input ->
-                        outFile.outputStream().use { output -> input.copyTo(output, bufferSize = 1 shl 20) }
-                    }
-                } catch (e2: Exception) {
-                    Log.e(TAG, "Failed to extract fallback asset models/$fallbackPath", e2)
-                }
+                Log.e(TAG, "Required model asset 'models/$relPath' missing from APK: ${e.message}")
+                return null
             }
         }
-        return outFile.absolutePath
+        return if (outFile.exists() && outFile.length() > 0) outFile.absolutePath else null
     }
 
     /** (Re)builds the Vad + OfflineRecognizer for [language] if not already loaded. */
@@ -168,7 +166,7 @@ class IndicSttEngine(
             val vadAsset = bundledModelManager.vadModel.value
 
             if (sttAsset == null || vadAsset == null) {
-                Log.w(TAG, "No offline STT pack shipped for '${language.code}' yet")
+                Log.w(TAG, "No offline STT pack declared for '${language.code}'")
                 recognizer?.release()
                 vad?.release()
                 recognizer = null
@@ -184,23 +182,27 @@ class IndicSttEngine(
             try {
                 val start = System.nanoTime()
 
-                // Load from real files on internal storage rather than via AssetManager:
-                // sherpa-onnx's newFromAsset() path reads the whole model into a native
-                // heap buffer through the Android asset API (necessary since assets live
-                // inside the APK's zip, not on a real filesystem path); newFromFile() lets
-                // the underlying ONNX Runtime session open the file directly instead. On a
-                // 141MB STT model that's a real difference on a 2GB-RAM device, so we pay
-                // a one-time extract-to-disk cost (skipped on every load after the first)
-                // to get there. See extractAssetToFile() below.
                 val vadModelFile = extractAssetToFile(vadAsset.modelPath)
                 val sttModelFile = extractAssetToFile(sttAsset.modelPath)
                 val sttTokensFile = extractAssetToFile(sttAsset.tokensPath)
 
+                if (vadModelFile == null || sttModelFile == null || sttTokensFile == null) {
+                    Log.e(TAG, "STT model assets missing on disk for '${language.code}': vad=$vadModelFile, stt=$sttModelFile, tokens=$sttTokensFile")
+                    recognizer?.release()
+                    vad?.release()
+                    recognizer = null
+                    vad = null
+                    loadedLanguageCode = null
+                    _modelInfo.value = _modelInfo.value.copy(
+                        name = "Model assets missing for ${language.englishName}",
+                        isLoaded = false,
+                    )
+                    return
+                }
+
                 // Scale with actual device capability (see recommendedOrtThreads):
-                // capable hardware decodes noticeably faster with a second worker
-                // thread, while a weak/low-RAM device stays at 1 to avoid the extra
-                // scratch-buffer memory and scheduling contention that buys it nothing.
                 val threads = recommendedOrtThreads(context)
+
 
                 val newVad = Vad(
                     assetManager = null,

@@ -6,13 +6,20 @@ using sherpa-onnx OfflineRecognizer.
 import json
 import sys
 from pathlib import Path
+
+# Ensure UTF-8 output on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import numpy as np
 
 try:
     import sherpa_onnx
     import onnx
 except ImportError as e:
-    print(f"Missing dependency: {e}")
+    print(f"Missing dependency: {e}. Please run using the virtual environment: .\\venv_conversion\\Scripts\\python")
     sys.exit(1)
 
 REPO_ROOT = Path(__file__).resolve().parents[0]
@@ -51,21 +58,22 @@ def verify_tokens():
         print(f"[FAIL] Expected last token to be blank (<blk>), found: {last_line}")
         return False
 
-    # Sample check for Tamil unicode range
+    # Check for Tamil unicode range across all tokens
     tamil_chars_found = 0
-    for line in lines[:100]:
+    for line in lines:
         token = line.split()[0]
         for ch in token:
             if '\u0B80' <= ch <= '\u0BFF':
                 tamil_chars_found += 1
 
-    print(f"Tamil characters detected in sample tokens: {tamil_chars_found}")
+    print(f"Tamil characters detected in tokens: {tamil_chars_found}")
     if tamil_chars_found == 0:
         print("[FAIL] No Tamil Unicode characters found in tokens!")
         return False
 
     print("[PASS] Tokens verification successful.")
     return True
+
 
 
 def verify_inference():

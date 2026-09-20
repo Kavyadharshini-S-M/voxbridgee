@@ -36,30 +36,42 @@ MODEL_TYPE = "EncDecHybridRNNTCTCBPEModel"
 
 def download_file(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() and dest.stat().st_size > 100_000_000:
-        print(f"[download] Already exists: {dest} ({dest.stat().st_size / 1e6:.2f} MB)")
-        return
-    print(f"[download] Downloading {url} -> {dest} ...")
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     )
-    with urllib.request.urlopen(req) as resp, open(dest, "wb") as f:
+    with urllib.request.urlopen(req) as resp:
         total_size = int(resp.headers.get("Content-Length", 0))
-        downloaded = 0
-        chunk_size = 1024 * 1024  # 1MB chunk
-        while True:
-            chunk = resp.read(chunk_size)
-            if not chunk:
-                break
-            f.write(chunk)
-            downloaded += len(chunk)
-            if total_size > 0:
-                percent = (downloaded / total_size) * 100
-                print(f"\r[download] {downloaded / 1e6:.1f} MB / {total_size / 1e6:.1f} MB ({percent:.1f}%)", end="", flush=True)
-            else:
-                print(f"\r[download] {downloaded / 1e6:.1f} MB", end="", flush=True)
-    print(f"\n[download] Done: {dest} ({dest.stat().st_size / 1e6:.2f} MB)")
+        if dest.exists() and total_size > 0 and dest.stat().st_size == total_size:
+            print(f"[download] Already exists and verified ({dest.stat().st_size / 1e6:.2f} MB): {dest}")
+            return
+        elif dest.exists() and total_size > 0 and dest.stat().st_size != total_size:
+            print(f"[download] Existing file size mismatch ({dest.stat().st_size} != {total_size} bytes). Re-downloading: {dest}")
+            dest.unlink(missing_ok=True)
+
+        print(f"[download] Downloading {url} -> {dest} ...")
+        with open(dest, "wb") as f:
+            downloaded = 0
+            chunk_size = 1024 * 1024  # 1MB chunk
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total_size > 0:
+                    percent = (downloaded / total_size) * 100
+                    print(f"\r[download] {downloaded / 1e6:.1f} MB / {total_size / 1e6:.1f} MB ({percent:.1f}%)", end="", flush=True)
+                else:
+                    print(f"\r[download] {downloaded / 1e6:.1f} MB", end="", flush=True)
+
+    final_size = dest.stat().st_size
+    if total_size > 0 and final_size != total_size:
+        dest.unlink(missing_ok=True)
+        raise IOError(f"Integrity check failed for {dest}: Expected {total_size} bytes, got {final_size} bytes.")
+
+    print(f"\n[download] Verified complete: {dest} ({final_size / 1e6:.2f} MB)")
+
 
 
 def build_tokens_txt(vocab_path: Path, tokens_out: Path) -> int:
