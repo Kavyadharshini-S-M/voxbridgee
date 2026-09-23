@@ -90,18 +90,28 @@ class MainActivity : ComponentActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val vm = activeViewModel
-        if (vm != null && keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && vm.uiState.value.hardwareKeyRemap == "volume_down") {
-            if (event?.repeatCount == 0) {
-                vm.onPttPressed()
+        if (vm != null) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    if (event?.repeatCount == 0) {
+                        vm.onPttPressed()
+                    }
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    if (event?.repeatCount == 0) {
+                        vm.replayLastMessage()
+                    }
+                    return true
+                }
             }
-            return true
         }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         val vm = activeViewModel
-        if (vm != null && keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && vm.uiState.value.hardwareKeyRemap == "volume_down") {
+        if (vm != null && keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
             vm.onPttReleased()
             return true
         }

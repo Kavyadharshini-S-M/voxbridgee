@@ -627,9 +627,8 @@ object BundledOfflineTranslator {
             )
         }
 
-        // Auto-detect the actual script/language of the input text
-        val detected = detectLanguage(trimmed)
-        val actualSource = detected ?: source
+        // Use explicit source language if known; only fallback to script detection if missing
+        val actualSource = source
 
         if (actualSource == target) {
             return@withContext TranslationResult(
@@ -848,9 +847,11 @@ object BundledOfflineTranslator {
     private fun isPhraseMatch(input: String, phrase: String): Boolean {
         val inClean = input.trim().lowercase().replace(Regex("[।,!?:;\"'().\\[\\]{}<>-~]"), "").replace(Regex("\\s+"), " ")
         val phClean = phrase.trim().lowercase().replace(Regex("[।,!?:;\"'().\\[\\]{}<>-~]"), "").replace(Regex("\\s+"), " ")
-        return inClean == phClean ||
-                inClean.contains(phClean) ||
-                phClean.contains(inClean)
+        if (inClean.isBlank() || phClean.isBlank()) return false
+        if (inClean == phClean) return true
+        // Only match if input closely matches the entire phrase (not short partial substrings)
+        if (inClean.contains(phClean) && phClean.length >= inClean.length * 0.75) return true
+        return false
     }
 
     private fun findConceptInTarget(
@@ -861,15 +862,14 @@ object BundledOfflineTranslator {
         val clean = word.trim().lowercase()
         if (clean.isEmpty()) return null
         for (concept in conceptDictionary) {
-            // Check source language match
+            // Check source language exact match
             val sourceWord = concept[source]?.lowercase()
-            if (sourceWord != null && (clean == sourceWord || clean.contains(sourceWord) || sourceWord.contains(clean))) {
+            if (sourceWord != null && clean == sourceWord) {
                 return concept[target]
             }
-            // Check ANY language in the concept map for match
+            // Check other terms for exact match
             for ((_, term) in concept) {
-                val termLower = term.lowercase()
-                if (clean == termLower || clean.contains(termLower) || termLower.contains(clean)) {
+                if (clean == term.lowercase()) {
                     return concept[target]
                 }
             }

@@ -46,7 +46,7 @@ class DeviceTelemetryProvider(
             batteryTemperatureC = 28.0f,
             isCharging = false,
             localIpAddress = getLocalIpv4Address(),
-            deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}",
+            deviceModel = getCleanDeviceModel(),
             ramUsageMb = getRealRamUsageMb(),
             deviceRole = "TRANSCEIVER"
         )
@@ -156,16 +156,52 @@ class DeviceTelemetryProvider(
     }
 
     companion object {
+        fun getCleanDeviceModel(): String {
+            val manufacturer = Build.MANUFACTURER.orEmpty().trim()
+            val model = Build.MODEL.orEmpty().trim()
+            if (model.isBlank()) {
+                return manufacturer.replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.ROOT) else it.toString() }
+            }
+            if (manufacturer.isBlank()) {
+                return cleanDeviceName(model)
+            }
+            val formattedManufacturer = manufacturer.replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.ROOT) else it.toString() }
+            val rawResult = if (model.startsWith(manufacturer, ignoreCase = true)) {
+                model
+            } else {
+                "$formattedManufacturer $model"
+            }
+            return cleanDeviceName(rawResult)
+        }
+
+        fun cleanDeviceName(rawName: String?): String {
+            if (rawName.isNullOrBlank()) return getCleanDeviceModel()
+            var clean = rawName.trim()
+
+            // Deduplicate consecutive identical words at start: e.g. "motorola motorola edge 30" -> "motorola edge 30"
+            val words = clean.split(Regex("\\s+"))
+            if (words.size >= 2 && words[0].equals(words[1], ignoreCase = true)) {
+                clean = words.drop(1).joinToString(" ")
+            }
+
+            // Check if manufacturer prefix is duplicated
+            val manufacturer = Build.MANUFACTURER.orEmpty().trim()
+            if (manufacturer.isNotBlank()) {
+                val doublePrefix = Regex("^(?i:${Regex.escape(manufacturer)})\\s+(?i:${Regex.escape(manufacturer)})\\s+", RegexOption.IGNORE_CASE)
+                clean = clean.replace(doublePrefix, "$manufacturer ")
+            }
+
+            return clean
+        }
+
         fun buildDeviceCallsign(context: Context? = null): String {
             if (context != null) {
                 try {
                     val custom = com.example.data.PreferenceManager(context).getCustomDeviceName()
-                    if (!custom.isNullOrBlank()) return custom
+                    if (!custom.isNullOrBlank()) return cleanDeviceName(custom)
                 } catch (e: Exception) {}
             }
-            val manufacturer = Build.MANUFACTURER.replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.ROOT) else it.toString() }
-            val model = Build.MODEL
-            return if (model.startsWith(manufacturer, ignoreCase = true)) model else "$manufacturer $model"
+            return getCleanDeviceModel()
         }
 
         fun getHardwareId(): String {

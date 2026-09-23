@@ -27,6 +27,7 @@ import com.example.translation.BundledOfflineTranslator
 import com.example.tts.IndicTtsEngine
 import com.example.tts.TtsEngine
 import com.example.tts.TtsModelInfo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -61,8 +62,11 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
 
     // Audio & Infrastructure Engines
     val alertAudioManager = AlertAudioManager(context)
+    val tacticalAlertManager = com.example.audio.TacticalAlertManager(context)
     val acousticPairingManager = com.example.audio.AcousticPairingManager(context, viewModelScope)
+    val onDemandModelDownloader = com.example.model.OnDemandModelDownloader(context, viewModelScope)
     val ultrasonicTransceiver = acousticPairingManager // Alias for backwards compatibility
+    private var lastSynthesizedSpeech: Pair<String, SupportedLanguage>? = null
     // Shared across both engines: each would otherwise construct its own
     // BundledModelManager and independently SHA-256-verify every bundled model on
     // startup — with 9 languages that's ~2GB hashed twice in parallel instead of once.
@@ -296,6 +300,25 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
         ttsEngine.preload(lang)
     }
 
+    fun selectOrDownloadLanguage(lang: SupportedLanguage, onComplete: () -> Unit = {}) {
+        if (onDemandModelDownloader.isLanguageModelAvailable(lang)) {
+            setSelectedLanguage(lang)
+            onComplete()
+        } else {
+            onDemandModelDownloader.downloadLanguageModel(
+                lang = lang,
+                onSuccess = {
+                    setSelectedLanguage(lang)
+                    onComplete()
+                },
+                onError = {
+                    setSelectedLanguage(lang)
+                    onComplete()
+                }
+            )
+        }
+    }
+
     fun setForceMaxVolumeAlerts(force: Boolean) {
         _uiState.value = _uiState.value.copy(forceMaxVolumeAlerts = force)
     }
@@ -386,19 +409,27 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch {
             val incomingLang = SupportedLanguage.fromCode(packet.languageCode)
             val receiverSelectedLang = _uiState.value.selectedLanguage
-            val detectedSource = BundledOfflineTranslator.detectLanguage(packet.text) ?: incomingLang
 
             // Translate into receiver device's active selected language using AI4Bharat IndicTrans2
-            val translation = neuralTranslator.translate(
-                text = packet.text,
-                source = detectedSource,
-                target = receiverSelectedLang
-            )
+            val translation = if (incomingLang == receiverSelectedLang) {
+                com.example.translation.IndicTrans2Translator.TranslationResult(
+                    translatedText = packet.text,
+                    sourceLanguage = incomingLang,
+                    targetLanguage = receiverSelectedLang,
+                    isNeuralTranslation = false
+                )
+            } else {
+                neuralTranslator.translate(
+                    text = packet.text,
+                    source = incomingLang,
+                    target = receiverSelectedLang
+                )
+            }
             val speechText = translation.translatedText
             val speechLang = receiverSelectedLang
 
-            val captionDisplay = if (detectedSource != receiverSelectedLang) {
-                "${translation.translatedText} (${detectedSource.nativeName} ➔ ${receiverSelectedLang.nativeName})"
+            val captionDisplay = if (incomingLang != receiverSelectedLang) {
+                "${translation.translatedText} (${incomingLang.nativeName} ➔ ${receiverSelectedLang.nativeName})"
             } else {
                 translation.translatedText
             }
@@ -410,8 +441,8 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
             )
 
             // Save to Room DB: store translated text in receiver's language with original snippet
-            val storedText = if (detectedSource != receiverSelectedLang) {
-                "${translation.translatedText} [${detectedSource.nativeName}: ${packet.text}]"
+            val storedText = if (incomingLang != receiverSelectedLang) {
+                "${translation.translatedText} [${incomingLang.nativeName}: ${packet.text}]"
             } else {
                 packet.text
             }
@@ -430,6 +461,10 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
                     hasPlayed = false
                 )
             )
+
+            // Dispatch Multi-Sensory Alert (Flashlight Strobe + Haptic Vibration)
+            tacticalAlertManager.dispatchIncomingAlert(isAlert = packet.isAlert, scope = viewModelScope)
+            lastSynthesizedSpeech = Pair(speechText, speechLang)
 
             // If device is in STT_ONLY mode, do not play aloud over speaker
             if (_uiState.value.deviceRole == "STT_ONLY") {
@@ -466,6 +501,43 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
                 }
             )
         }
+    }
+
+    /**
+     * Replays the last synthesized voice packet over the phone speaker.
+     */
+    fun replayLastMessage() {
+        val last = lastSynthesizedSpeech ?: return
+        viewModelScope.launch {
+            sttEngine.stopListening()
+            ttsEngine.speak(
+                text = last.first,
+                language = last.second,
+                isAlert = false,
+                onDone = {
+                    if (!_uiState.value.isPttActive && _uiState.value.deviceRole != "TTS_ONLY") {
+                        sttEngine.startListening(_uiState.value.selectedLanguage)
+                    }
+                }
+            )
+        }
+    }
+
+    /**
+     * Directly bypasses STT and broadcasts hardcoded quick-action tactical commands over the mesh network.
+     */
+    fun sendTacticalQuickAction(
+        actionTitle: String,
+        isAlert: Boolean = false,
+        priority: AlertPriority = AlertPriority.ROUTINE
+    ) {
+        val lang = _uiState.value.selectedLanguage
+        transmitUtterance(
+            text = actionTitle,
+            language = lang,
+            isAlert = isAlert,
+            priority = priority
+        )
     }
 
     /**
@@ -657,7 +729,9 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
     }
 
     fun disconnectPeer() {
-        transportLayer.disconnect()
+        viewModelScope.launch(Dispatchers.IO) {
+            transportLayer.disconnect()
+        }
     }
 
     fun switchProtocol(protocol: TransportProtocol) {

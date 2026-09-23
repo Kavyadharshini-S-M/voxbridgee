@@ -152,13 +152,7 @@ class IndicTrans2Translator(
             return@withContext TranslationResult(trimmed, source, target, isNeuralTranslation = false)
         }
 
-        // Auto-detect actual source script if mismatch occurred
-        val detected = BundledOfflineTranslator.detectLanguage(trimmed)
-        val actualSource = detected ?: source
-
-        if (actualSource == target) {
-            return@withContext TranslationResult(trimmed, actualSource, target, isNeuralTranslation = false)
-        }
+        val actualSource = source
 
         // On-Demand Session Loading: Load only when source != target
         ensureSessionsLoaded()

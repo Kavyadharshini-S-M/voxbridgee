@@ -53,12 +53,29 @@ import com.example.viewmodel.MissionControlViewModel
 
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.ImeAction
+import com.example.model.AlertPriority
+
+/**
+ * Data structure representing pre-configured fast-dispatch tactical commands.
+ */
+data class TacticalQuickAction(
+    val title: String,
+    val isAlert: Boolean,
+    val priority: AlertPriority,
+    val icon: ImageVector,
+    val accentColor: Color
+)
 
 /**
  * Minimal Walkie-Talkie Screen (Linear / Things 3 / Notion aesthetic).
@@ -298,7 +315,127 @@ fun MissionControlScreen(
             speechProbability = speechProbability
         )
 
-        // Section 5: Text Message Transmission
+        // Section 5: Tactical Quick-Pad (Bypass STT & Instant Mesh Broadcast)
+        val tacticalQuickActions = remember {
+            listOf(
+                TacticalQuickAction(
+                    title = "SOS Medical",
+                    isAlert = true,
+                    priority = AlertPriority.CRITICAL_DISTRESS,
+                    icon = Icons.Default.MedicalServices,
+                    accentColor = Color(0xFFE53935)
+                ),
+                TacticalQuickAction(
+                    title = "Route Blocked",
+                    isAlert = true,
+                    priority = AlertPriority.URGENT,
+                    icon = Icons.Default.Block,
+                    accentColor = Color(0xFFFB8C00)
+                ),
+                TacticalQuickAction(
+                    title = "Need Water",
+                    isAlert = false,
+                    priority = AlertPriority.ROUTINE,
+                    icon = Icons.Default.WaterDrop,
+                    accentColor = Color(0xFF0288D1)
+                ),
+                TacticalQuickAction(
+                    title = "Position Secure",
+                    isAlert = false,
+                    priority = AlertPriority.ROUTINE,
+                    icon = Icons.Default.Shield,
+                    accentColor = Color(0xFF43A047)
+                )
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(colors.surface)
+                .border(1.dp, colors.outline, RoundedCornerShape(16.dp))
+                .padding(14.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "TACTICAL QUICK-PAD",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.textSecondary,
+                        letterSpacing = 0.5.sp
+                    )
+                    Text(
+                        text = "Direct UTF-8 Mesh Broadcast",
+                        fontSize = 11.sp,
+                        color = colors.accent
+                    )
+                }
+
+                // 2x2 Tactical Action Matrix
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    tacticalQuickActions.chunked(2).forEach { rowActions ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowActions.forEach { action ->
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(action.accentColor.copy(alpha = 0.08f))
+                                        .border(1.dp, action.accentColor.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            viewModel.sendTacticalQuickAction(
+                                                actionTitle = action.title,
+                                                isAlert = action.isAlert,
+                                                priority = action.priority
+                                            )
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(action.accentColor.copy(alpha = 0.16f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = action.icon,
+                                                contentDescription = action.title,
+                                                tint = action.accentColor,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = action.title,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = colors.textPrimary,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section 6: Text Message Transmission
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -390,11 +527,11 @@ fun MissionControlScreen(
         LanguageSelectionSheet(
             selectedLanguage = uiState.selectedLanguage,
             onLanguageSelected = { lang ->
-                viewModel.setSelectedLanguage(lang)
-                showLanguageSheet = false
+                viewModel.selectOrDownloadLanguage(lang)
             },
             onDismiss = { showLanguageSheet = false },
-            onPreviewAudio = { lang -> viewModel.testTtsAudio(lang.sampleAlertPhrase) }
+            onPreviewAudio = { lang -> viewModel.testTtsAudio(lang.sampleAlertPhrase) },
+            modelDownloader = viewModel.onDemandModelDownloader
         )
     }
 }

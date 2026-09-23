@@ -220,6 +220,7 @@ class AlertAudioManager(private val context: Context) {
     /**
      * Triggers tactical SOS vibration sequence.
      */
+    @Suppress("DEPRECATION")
     fun triggerSosHaptics() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -229,7 +230,6 @@ class AlertAudioManager(private val context: Context) {
                 val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
                 vibrator?.vibrate(effect)
             } else {
-                @Suppress("DEPRECATION")
                 val timings = longArrayOf(0, 150, 100, 150, 100, 150, 300, 400, 150, 400)
                 vibrator?.vibrate(timings, -1)
             }

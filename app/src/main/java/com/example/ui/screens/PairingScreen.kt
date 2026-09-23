@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -7,6 +9,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -62,6 +65,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -81,6 +85,7 @@ fun PairingScreen(
     viewModel: MissionControlViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val colors = MinimalColorsInstance
     val activeProtocol by viewModel.activeProtocol.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
@@ -185,7 +190,7 @@ fun PairingScreen(
                         }
 
                         Text(
-                            text = telemetry.deviceModel,
+                            text = "This Device",
                             fontSize = 13.sp,
                             color = colors.textSecondary
                         )
@@ -370,6 +375,57 @@ fun PairingScreen(
             }
         }
 
+        // Bluetooth System Pairing Prompt Banner
+        if (activeProtocol == TransportProtocol.BLUETOOTH) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.accentContainer.copy(alpha = 0.5f))
+                        .border(1.dp, colors.accent.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Bluetooth,
+                                contentDescription = null,
+                                tint = colors.accent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Paired Bluetooth Devices",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.textPrimary
+                            )
+                        }
+                        Text(
+                            text = "Only paired devices appear below. To connect to a new device, pair it in Android Bluetooth Settings first.",
+                            fontSize = 12.sp,
+                            color = colors.textSecondary
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                try {
+                                    val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {}
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, colors.accent)
+                        ) {
+                            Text("Open System Bluetooth Settings", fontSize = 12.sp, color = colors.accent)
+                        }
+                    }
+                }
+            }
+        }
+
         // Section 5: Scan & Discovered Peers Header
         item {
             Row(
@@ -378,7 +434,7 @@ fun PairingScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "People Around You (${discoveredPeers.size})",
+                    text = if (activeProtocol == TransportProtocol.BLUETOOTH) "Paired Devices (${discoveredPeers.size})" else "People Around You (${discoveredPeers.size})",
                     fontSize = if (isCompactWidth) 16.sp else 18.sp,
                     fontWeight = FontWeight.Medium,
                     color = colors.textPrimary,
