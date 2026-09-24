@@ -70,6 +70,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.PreferenceManager
 import com.example.model.ConnectionStatus
 import com.example.model.TransportProtocol
 import com.example.ui.components.QrPairingDialog
@@ -820,8 +821,9 @@ fun PairingScreen(
 
     if (showQrDialog) {
         QrPairingDialog(
-            deviceName = telemetry.nodeCallsign,
-            ipAddress = telemetry.localIpAddress,
+            deviceId = PreferenceManager(context).getInstallUuid(),
+            callsign = telemetry.nodeCallsign,
+            realIpAddress = telemetry.localIpAddress,
             port = 8889,
             onConnectToPeer = { ip, port ->
                 viewModel.connectDirectIp(ip, port)

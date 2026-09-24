@@ -204,34 +204,131 @@ class DeviceTelemetryProvider(
             return getCleanDeviceModel()
         }
 
-        fun getHardwareId(): String {
+        fun getPersistentInstallUuid(context: Context): String {
+            return com.example.data.PreferenceManager(context).getInstallUuid()
+        }
+
+        fun getHardwareId(context: Context? = null): String {
+            if (context != null) {
+                try {
+                    val uuid = com.example.data.PreferenceManager(context).getInstallUuid()
+                    val shortUuid = uuid.replace("-", "").take(6).uppercase()
+                    val modelClean = Build.MODEL.replace(Regex("[^a-zA-Z0-9]"), "").take(6).uppercase()
+                    return "HW-$modelClean-$shortUuid"
+                } catch (e: Exception) {}
+            }
             val modelClean = Build.MODEL.replace(Regex("[^a-zA-Z0-9]"), "").take(6).uppercase()
             val suffix = (Build.ID.hashCode().toString().takeLast(3).replace("-", "7"))
             return "HW-$modelClean-$suffix"
         }
 
-        fun getLocalIpv4Address(): String {
+        /**
+         * Extracts authentic device IP address by querying active NetworkInterfaces.
+         * Filters out loopback, point-to-point, and inactive interfaces.
+         * Prioritizes:
+         * 1. Wi-Fi Direct interfaces (p2p-wlan0-*, p2p*)
+         * 2. Hotspot interfaces (ap0 / wlan1 / softap)
+         * 3. Active Wi-Fi (wlan0)
+         * 4. IPv4 addresses matching 192.168.x.x or 172.x.x.x
+         */
+        fun getRealDeviceIpAddress(): String {
             try {
-                val interfaces = NetworkInterface.getNetworkInterfaces()
-                while (interfaces.hasMoreElements()) {
-                    val intf = interfaces.nextElement()
-                    if (!intf.isUp || intf.isLoopback) continue
-                    val addrs = intf.inetAddresses
-                    while (addrs.hasMoreElements()) {
-                        val addr = addrs.nextElement()
-                        if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                            val host = addr.hostAddress ?: ""
-                            if (host.startsWith("192.168.") || host.startsWith("10.") || host.startsWith("172.")) {
-                                return host
-                            }
-                        }
+                val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+                val activeInterfaces = interfaces.filter { intf ->
+                    try {
+                        intf.isUp && !intf.isLoopback && !intf.isPointToPoint
+                    } catch (e: Throwable) {
+                        false
                     }
                 }
+
+                fun getValidIpv4List(intf: NetworkInterface): List<String> {
+                    val result = mutableListOf<String>()
+                    try {
+                        for (addr in intf.inetAddresses) {
+                            if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress) {
+                                val host = addr.hostAddress?.trim().orEmpty()
+                                if (host.isNotEmpty() && host != "127.0.0.1" && host != "0.0.0.0") {
+                                    result.add(host)
+                                }
+                            }
+                        }
+                    } catch (e: Throwable) {}
+                    return result
+                }
+
+                // 1. Prioritize Wi-Fi Direct interfaces (p2p-wlan0-*, p2p-*, p2p0, etc.)
+                val p2pInterfaces = activeInterfaces.filter {
+                    val name = it.name.lowercase()
+                    name.startsWith("p2p-wlan0") || name.startsWith("p2p") || name.contains("p2p")
+                }
+                for (intf in p2pInterfaces) {
+                    val ips = getValidIpv4List(intf)
+                    if (ips.isNotEmpty()) {
+                        Log.i("DeviceTelemetry", "Resolved Real IP from Wi-Fi Direct interface (${intf.name}): ${ips.first()}")
+                        return ips.first()
+                    }
+                }
+
+                // 2. Prioritize Hotspot interfaces (ap0, ap1, wlan1, softap0, swlan, etc.)
+                val hotspotInterfaces = activeInterfaces.filter {
+                    val name = it.name.lowercase()
+                    name.startsWith("ap") || name == "wlan1" || name.contains("softap") || name.startsWith("swlan")
+                }
+                for (intf in hotspotInterfaces) {
+                    val ips = getValidIpv4List(intf)
+                    if (ips.isNotEmpty()) {
+                        Log.i("DeviceTelemetry", "Resolved Real IP from Hotspot interface (${intf.name}): ${ips.first()}")
+                        return ips.first()
+                    }
+                }
+
+                // 3. Prioritize Active Wi-Fi interfaces (wlan0, wlan, eth0)
+                val wifiInterfaces = activeInterfaces.filter {
+                    val name = it.name.lowercase()
+                    name == "wlan0" || name.startsWith("wlan") || name.startsWith("eth")
+                }
+                for (intf in wifiInterfaces) {
+                    val ips = getValidIpv4List(intf)
+                    if (ips.isNotEmpty()) {
+                        Log.i("DeviceTelemetry", "Resolved Real IP from Active Wi-Fi interface (${intf.name}): ${ips.first()}")
+                        return ips.first()
+                    }
+                }
+
+                // 4. Fallback to IPv4 addresses matching 192.168.x.x or 172.x.x.x
+                val allCandidateIps = activeInterfaces.flatMap { getValidIpv4List(it) }
+
+                val ip192 = allCandidateIps.firstOrNull { it.startsWith("192.168.") }
+                if (!ip192.isNullOrBlank()) {
+                    Log.i("DeviceTelemetry", "Resolved Real IP from 192.168.x.x fallback: $ip192")
+                    return ip192
+                }
+
+                val ip172 = allCandidateIps.firstOrNull { it.startsWith("172.") }
+                if (!ip172.isNullOrBlank()) {
+                    Log.i("DeviceTelemetry", "Resolved Real IP from 172.x.x.x fallback: $ip172")
+                    return ip172
+                }
+
+                val ip10 = allCandidateIps.firstOrNull { it.startsWith("10.") }
+                if (!ip10.isNullOrBlank()) {
+                    Log.i("DeviceTelemetry", "Resolved Real IP from 10.x.x.x fallback: $ip10")
+                    return ip10
+                }
+
+                val anyIp = allCandidateIps.firstOrNull()
+                if (!anyIp.isNullOrBlank()) {
+                    Log.i("DeviceTelemetry", "Resolved Real IP from general IPv4 fallback: $anyIp")
+                    return anyIp
+                }
             } catch (e: Exception) {
-                Log.w("DeviceTelemetry", "IP resolve: ${e.message}")
+                Log.w("DeviceTelemetry", "Error resolving real device IP: ${e.message}")
             }
             return "127.0.0.1"
         }
+
+        fun getLocalIpv4Address(): String = getRealDeviceIpAddress()
 
         fun getRealRamUsageMb(): Float {
             val runtime = Runtime.getRuntime()

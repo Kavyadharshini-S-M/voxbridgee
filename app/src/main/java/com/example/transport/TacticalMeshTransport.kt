@@ -98,7 +98,7 @@ class TacticalMeshTransport(
         }
     }
 
-    val myNodeId: String = "NODE_${UUID.randomUUID().toString().take(6).uppercase()}"
+    val myNodeId: String = "NODE_${try { PreferenceManager(context).getInstallUuid().replace("-", "").take(6).uppercase() } catch (e: Throwable) { UUID.randomUUID().toString().take(6).uppercase() }}"
     val myCallsign: String get() = telemetry.value.nodeCallsign
 
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
@@ -373,14 +373,14 @@ class TacticalMeshTransport(
             Log.i("TacticalMesh", "[LAN_BEACON] Secondary shared-router UDP broadcaster active (secondary fallback)")
             while (isActive) {
                 try {
-                    val localIp = DeviceTelemetryProvider.getLocalIpv4Address()
+                    val localIp = DeviceTelemetryProvider.getRealDeviceIpAddress()
                     if (localIp == "127.0.0.1" || localIp == "0.0.0.0") {
                         delay(2000)
                         continue
                     }
 
                     val customName = myCallsign
-                    val hwId = DeviceTelemetryProvider.getHardwareId()
+                    val hwId = DeviceTelemetryProvider.getHardwareId(context)
                     val beaconObj = JSONObject().apply {
                         put("type", "BEACON")
                         put("nodeId", myNodeId)
@@ -433,9 +433,9 @@ class TacticalMeshTransport(
             try {
                 tcpServerSocket = ServerSocket().apply {
                     reuseAddress = true
-                    bind(InetSocketAddress(tcpPort))
+                    bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), tcpPort))
                 }
-                Log.i("TacticalMesh", "Real TCP Server listening on port $tcpPort")
+                Log.i("TacticalMesh", "Real TCP Server listening on port $tcpPort bound to 0.0.0.0 (all interfaces)")
 
                 while (isActive) {
                     val client = try {
@@ -495,7 +495,7 @@ class TacticalMeshTransport(
             val handshake = JSONObject().apply {
                 put("type", "HANDSHAKE")
                 put("nodeId", myNodeId)
-                put("hardwareId", DeviceTelemetryProvider.getHardwareId())
+                put("hardwareId", DeviceTelemetryProvider.getHardwareId(context))
                 put("deviceName", myCallsign)
                 put("callsign", myCallsign)
                 put("connectionType", connType)
@@ -621,7 +621,7 @@ class TacticalMeshTransport(
             val handshake = JSONObject().apply {
                 put("type", "HANDSHAKE")
                 put("nodeId", myNodeId)
-                put("hardwareId", DeviceTelemetryProvider.getHardwareId())
+                put("hardwareId", DeviceTelemetryProvider.getHardwareId(context))
                 put("deviceName", myCallsign)
                 put("callsign", myCallsign)
                 put("connectionType", "BLUETOOTH")
@@ -845,7 +845,7 @@ class TacticalMeshTransport(
                             val handshake = JSONObject().apply {
                                 put("type", "HANDSHAKE")
                                 put("nodeId", myNodeId)
-                                put("hardwareId", DeviceTelemetryProvider.getHardwareId())
+                                put("hardwareId", DeviceTelemetryProvider.getHardwareId(context))
                                 put("deviceName", myCallsign)
                                 put("callsign", myCallsign)
                                 put("connectionType", "BLUETOOTH")
@@ -1061,7 +1061,7 @@ class TacticalMeshTransport(
             val handshake = JSONObject().apply {
                 put("type", "HANDSHAKE")
                 put("nodeId", myNodeId)
-                put("hardwareId", DeviceTelemetryProvider.getHardwareId())
+                put("hardwareId", DeviceTelemetryProvider.getHardwareId(context))
                 put("deviceName", myCallsign)
                 put("callsign", myCallsign)
                 put("connectionType", connectionType)
@@ -1397,7 +1397,7 @@ class TacticalMeshTransport(
                     val peerNodeId = obj.getString("nodeId")
                     if (peerNodeId == myNodeId) return // Ignore self-beacon
                     val peerHwId = obj.optString("hardwareId", "")
-                    if (peerHwId == DeviceTelemetryProvider.getHardwareId()) return
+                    if (peerHwId == DeviceTelemetryProvider.getHardwareId(context)) return
 
                     val ip = obj.optString("ip", sourceAddress)
                     if (ip == "127.0.0.1" || ip == "0.0.0.0" || ip == telemetry.value.localIpAddress) return
@@ -1580,7 +1580,7 @@ class TacticalMeshTransport(
     private fun isSelfDevice(peer: PeerDevice): Boolean {
         // 1. Direct Node ID or Hardware ID match
         if (peer.id.equals(myNodeId, ignoreCase = true)) return true
-        val myHardwareId = DeviceTelemetryProvider.getHardwareId()
+        val myHardwareId = DeviceTelemetryProvider.getHardwareId(context)
         if (peer.id.equals(myHardwareId, ignoreCase = true)) return true
 
         // 2. Loopback or invalid IP
@@ -1937,5 +1937,9 @@ class TacticalMeshTransport(
             )
             _incomingPackets.emit(packet)
         }
+    }
+
+    companion object {
+        fun getRealDeviceIpAddress(): String = DeviceTelemetryProvider.getRealDeviceIpAddress()
     }
 }

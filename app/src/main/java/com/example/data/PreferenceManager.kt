@@ -61,4 +61,13 @@ class PreferenceManager(context: Context) {
     fun setFieldModeEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("field_mode_enabled", enabled).apply()
     }
+
+    fun getInstallUuid(): String {
+        var uuid = prefs.getString("install_uuid", null)
+        if (uuid.isNullOrBlank()) {
+            uuid = java.util.UUID.randomUUID().toString()
+            prefs.edit().putString("install_uuid", uuid).apply()
+        }
+        return uuid
+    }
 }

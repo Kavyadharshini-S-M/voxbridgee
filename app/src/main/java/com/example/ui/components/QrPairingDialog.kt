@@ -55,7 +55,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.data.PreferenceManager
 import com.example.ui.theme.MinimalColorsInstance
+import org.json.JSONObject
 import java.util.UUID
 
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -63,26 +65,41 @@ import androidx.compose.foundation.layout.systemBarsPadding
 /**
  * QR Code & Direct Connection String Pairing Fallback Dialog.
  *
- * Provides visual 2D matrix rendering of device IP, CallSign, Port, and encryption token,
- * along with quick token copy and direct input connection options.
+ * Provides visual 2D matrix rendering of structured JSON payload:
+ * {deviceId, callsign, realIpAddress, port, token}
+ * along with quick payload/address copy and direct input connection options.
  */
 @Composable
 fun QrPairingDialog(
-    deviceName: String,
-    ipAddress: String,
+    deviceId: String = "",
+    callsign: String = "",
+    realIpAddress: String = "",
     port: Int = 8889,
+    deviceName: String = callsign,
+    ipAddress: String = realIpAddress,
     onConnectToPeer: (ip: String, port: Int) -> Unit,
     onDismiss: () -> Unit
 ) {
     val colors = MinimalColorsInstance
     val context = LocalContext.current
 
+    val effectiveCallsign = if (callsign.isNotBlank()) callsign else if (deviceName.isNotBlank()) deviceName else "Peer"
+    val effectiveIp = if (realIpAddress.isNotBlank()) realIpAddress else if (ipAddress.isNotBlank()) ipAddress else "127.0.0.1"
+    val effectiveDeviceId = if (deviceId.isNotBlank()) deviceId else try { PreferenceManager(context).getInstallUuid() } catch (e: Exception) { "DEV_${UUID.randomUUID().toString().take(6).uppercase()}" }
+
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Show QR, 1 = Scan / Enter Token
     var manualTokenInput by remember { mutableStateOf("") }
 
-    val sessionToken = remember {
-        val raw = UUID.randomUUID().toString().take(8).uppercase()
-        "ITP://$ipAddress:$port?peer=${deviceName.replace(" ", "_")}&tok=$raw"
+    val sessionToken = remember { UUID.randomUUID().toString().take(8).uppercase() }
+
+    val qrPayloadJson = remember(effectiveDeviceId, effectiveCallsign, effectiveIp, port, sessionToken) {
+        JSONObject().apply {
+            put("deviceId", effectiveDeviceId)
+            put("callsign", effectiveCallsign)
+            put("realIpAddress", effectiveIp)
+            put("port", port)
+            put("token", sessionToken)
+        }.toString()
     }
 
     Dialog(
@@ -221,14 +238,14 @@ fun QrPairingDialog(
                             contentAlignment = Alignment.Center
                         ) {
                             QrMatrixCanvas(
-                                seedString = "$ipAddress:$port",
+                                seedString = qrPayloadJson,
                                 modifier = Modifier.size(172.dp)
                             )
                         }
 
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                text = deviceName,
+                                text = effectiveCallsign,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = colors.textPrimary
@@ -258,14 +275,14 @@ fun QrPairingDialog(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = "Node Address",
                                         fontSize = 11.sp,
                                         color = colors.textSecondary
                                     )
                                     Text(
-                                        text = "$ipAddress:$port",
+                                        text = "$effectiveIp:$port",
                                         fontSize = 15.sp,
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.Bold,
@@ -276,7 +293,7 @@ fun QrPairingDialog(
                                 Button(
                                     onClick = {
                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        val clip = ClipData.newPlainText("VOXBRIDGE Node Address", "$ipAddress:$port")
+                                        val clip = ClipData.newPlainText("VOXBRIDGE Node Address", "$effectiveIp:$port")
                                         clipboard.setPrimaryClip(clip)
                                         Toast.makeText(context, "Node Address copied!", Toast.LENGTH_SHORT).show()
                                     },
@@ -292,7 +309,57 @@ fun QrPairingDialog(
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Copy", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text("Copy IP", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        // Structured Payload Box with 1-Tap Copy
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(colors.background)
+                                .border(1.dp, colors.outline, RoundedCornerShape(12.dp))
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text(
+                                        text = "Structured QR Payload",
+                                        fontSize = 11.sp,
+                                        color = colors.textSecondary
+                                    )
+                                    Text(
+                                        text = qrPayloadJson,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = colors.textPrimary,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clip = ClipData.newPlainText("VOXBRIDGE QR Payload", qrPayloadJson)
+                                        clipboard.setPrimaryClip(clip)
+                                        Toast.makeText(context, "Payload copied!", Toast.LENGTH_SHORT).show()
+                                    },
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy Payload",
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Copy JSON", fontSize = 11.sp)
                                 }
                             }
                         }
@@ -441,29 +508,97 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawFinderPattern(
     )
 }
 
-private fun extractIpFromToken(token: String): String {
-    if (!token.contains("://") && !token.contains("?")) {
+private fun extractIpFromToken(rawInput: String): String {
+    val token = rawInput.trim()
+    if (token.isEmpty()) return ""
+
+    // 1. Structured JSON string containing realIpAddress, ip, or address
+    if (token.startsWith("{") && token.endsWith("}")) {
+        try {
+            val json = JSONObject(token)
+            val ip = when {
+                json.has("realIpAddress") -> json.optString("realIpAddress")
+                json.has("ip") -> json.optString("ip")
+                json.has("address") -> json.optString("address")
+                else -> ""
+            }.trim()
+            if (ip.isNotEmpty()) return ip
+        } catch (e: Exception) {}
+    }
+
+    // 2. CSV format: deviceId,callsign,realIpAddress,port,token
+    if (token.contains(",")) {
+        val parts = token.split(",").map { it.trim() }
+        // Format: deviceId,callsign,realIpAddress,port,token (index 2 is IP)
+        if (parts.size >= 3 && parts[2].matches(Regex("\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"))) {
+            return parts[2]
+        }
+        // Format: IP,Port,...
+        if (parts.isNotEmpty() && parts[0].matches(Regex("\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"))) {
+            return parts[0]
+        }
+    }
+
+    // 3. URI scheme (ITP://192.168.1.1:8889?...)
+    if (token.contains("://")) {
+        return try {
+            val hostPart = token.substringAfter("://").substringBefore("?").substringBefore("/")
+            hostPart.split(":")[0].trim()
+        } catch (e: Exception) {
+            token
+        }
+    }
+
+    // 4. IP:Port or plain IP
+    if (token.contains(":")) {
         return token.split(":")[0].trim()
     }
-    return try {
-        val hostPart = token.substringAfter("://").substringBefore("?").substringBefore("/")
-        hostPart.split(":")[0].trim()
-    } catch (e: Exception) {
-        token.trim()
-    }
+
+    return token
 }
 
-private fun extractPortFromToken(token: String, defaultPort: Int): Int {
-    if (!token.contains(":")) return defaultPort
-    return try {
-        val hostPart = if (token.contains("://")) {
-            token.substringAfter("://").substringBefore("?").substringBefore("/")
-        } else {
-            token.substringBefore("?")
-        }
-        val parts = hostPart.split(":")
-        if (parts.size >= 2) parts[1].toInt() else defaultPort
-    } catch (e: Exception) {
-        defaultPort
+private fun extractPortFromToken(rawInput: String, defaultPort: Int): Int {
+    val token = rawInput.trim()
+    if (token.isEmpty()) return defaultPort
+
+    // 1. Structured JSON string containing port
+    if (token.startsWith("{") && token.endsWith("}")) {
+        try {
+            val json = JSONObject(token)
+            if (json.has("port")) {
+                val p = json.optInt("port", defaultPort)
+                if (p > 0) return p
+            }
+        } catch (e: Exception) {}
     }
+
+    // 2. CSV format: deviceId,callsign,realIpAddress,port,token
+    if (token.contains(",")) {
+        val parts = token.split(",").map { it.trim() }
+        if (parts.size >= 4) {
+            val p = parts[3].toIntOrNull()
+            if (p != null && p > 0) return p
+        }
+        if (parts.size >= 2) {
+            val p = parts[1].toIntOrNull()
+            if (p != null && p > 0) return p
+        }
+    }
+
+    // 3. URI scheme or IP:Port
+    if (token.contains(":")) {
+        return try {
+            val hostPart = if (token.contains("://")) {
+                token.substringAfter("://").substringBefore("?").substringBefore("/")
+            } else {
+                token.substringBefore("?")
+            }
+            val parts = hostPart.split(":")
+            if (parts.size >= 2) parts[1].toIntOrNull() ?: defaultPort else defaultPort
+        } catch (e: Exception) {
+            defaultPort
+        }
+    }
+
+    return defaultPort
 }
