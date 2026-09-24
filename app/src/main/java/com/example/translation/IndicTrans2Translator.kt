@@ -47,6 +47,7 @@ class IndicTrans2Translator(
     private var isInitialized = false
 
     companion object {
+        private val extractionLock = Any()
         // AI4Bharat IndicTrans2 Language Identifiers
         val INDIC_LANG_TAGS = mapOf(
             SupportedLanguage.HINDI to "__hin_Deva__",
@@ -117,17 +118,24 @@ class IndicTrans2Translator(
         }
     }
 
-    private fun extractAssetToFile(relPath: String): String? {
+    private fun extractAssetToFile(relPath: String): String? = synchronized(extractionLock) {
         val outFile = File(context.filesDir, "models_cache/$relPath")
-        if (!outFile.exists() || outFile.length() == 0L) {
-            outFile.parentFile?.mkdirs()
-            try {
-                context.assets.open("models/$relPath").use { input ->
-                    outFile.outputStream().use { output -> input.copyTo(output, bufferSize = 1 shl 20) }
-                }
-            } catch (e: Exception) {
-                return null
+        if (outFile.exists() && outFile.length() > 0) {
+            return outFile.absolutePath
+        }
+        val tmpFile = File(context.filesDir, "models_cache/$relPath.tmp")
+        outFile.parentFile?.mkdirs()
+        try {
+            context.assets.open("models/$relPath").use { input ->
+                tmpFile.outputStream().use { output -> input.copyTo(output, bufferSize = 1 shl 20) }
             }
+            if (tmpFile.exists() && tmpFile.length() > 0) {
+                if (outFile.exists()) outFile.delete()
+                tmpFile.renameTo(outFile)
+            }
+        } catch (e: Exception) {
+            if (tmpFile.exists()) tmpFile.delete()
+            return null
         }
         return if (outFile.exists() && outFile.length() > 0) outFile.absolutePath else null
     }

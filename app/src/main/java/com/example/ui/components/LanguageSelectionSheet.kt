@@ -40,14 +40,6 @@ import androidx.compose.ui.unit.sp
 import com.example.model.SupportedLanguage
 import com.example.ui.theme.MinimalColorsInstance
 
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import com.example.model.OnDemandModelDownloader
-
 /**
  * Minimal Modal Bottom Sheet for Language Selection (Linear / Arc style).
  */
@@ -58,16 +50,10 @@ fun LanguageSelectionSheet(
     onLanguageSelected: (SupportedLanguage) -> Unit,
     onDismiss: () -> Unit,
     onPreviewAudio: (SupportedLanguage) -> Unit,
-    modifier: Modifier = Modifier,
-    modelDownloader: OnDemandModelDownloader? = null
+    modifier: Modifier = Modifier
 ) {
     val colors = MinimalColorsInstance
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    val downloadingLanguages by modelDownloader?.downloadingLanguages?.collectAsState()
-        ?: remember { mutableStateOf<Set<String>>(emptySet()) }
-    val downloadProgress by modelDownloader?.downloadProgress?.collectAsState()
-        ?: remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -133,8 +119,6 @@ fun LanguageSelectionSheet(
             ) {
                 items(SupportedLanguage.entries) { lang ->
                     val isSelected = lang == selectedLanguage
-                    val isDownloading = downloadingLanguages.contains(lang.code)
-                    val progressPercent = downloadProgress[lang.code] ?: 0
 
                     Box(
                         modifier = Modifier
@@ -166,38 +150,29 @@ fun LanguageSelectionSheet(
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = if (isDownloading) "Downloading $progressPercent%..." else lang.englishName,
-                                    fontSize = 12.sp,
-                                    color = if (isDownloading) colors.accent else colors.textSecondary,
-                                    fontWeight = if (isDownloading) FontWeight.Medium else FontWeight.Normal
+                                    text = lang.englishName,
+                                    fontSize = 13.sp,
+                                    color = colors.textSecondary
                                 )
                             }
 
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (isDownloading) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                        color = colors.accent
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .clickable { onPreviewAudio(lang) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.VolumeUp,
+                                        contentDescription = "Test voice",
+                                        tint = if (isSelected) colors.accent else colors.textSecondary,
+                                        modifier = Modifier.size(16.dp)
                                     )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .clip(CircleShape)
-                                            .clickable { onPreviewAudio(lang) },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.VolumeUp,
-                                            contentDescription = "Test voice",
-                                            tint = if (isSelected) colors.accent else colors.textSecondary,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
                                 }
 
-                                if (isSelected && !isDownloading) {
+                                if (isSelected) {
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Icon(
                                         imageVector = Icons.Default.Check,

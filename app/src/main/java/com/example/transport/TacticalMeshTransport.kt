@@ -472,7 +472,44 @@ class TacticalMeshTransport(
 
             // Retain as one of possibly several simultaneous duplex links
             peerLinks[key] = PeerLink(key, TransportProtocol.WIFI_DIRECT, writer, socket)
+
+            val existingPeer = peerMap[key] ?: peerMap.values.find { it.address.equals(key, ignoreCase = true) }
+            val peerDisplayName = when {
+                existingPeer != null && isCustomCallsign(existingPeer.name) -> existingPeer.name
+                else -> "TCP Peer ($key)"
+            }
+
+            val peer = PeerDevice(
+                id = key,
+                name = peerDisplayName,
+                address = key,
+                protocol = TransportProtocol.WIFI_DIRECT,
+                port = socket.port,
+                signalStrengthDbm = -50,
+                isConnected = true
+            )
+            peerMap[key] = peer
+            peerLastSeen[key] = System.currentTimeMillis()
+
+            // Send Handshake over TCP link so client/peer learns server identity
+            val handshake = JSONObject().apply {
+                put("type", "HANDSHAKE")
+                put("nodeId", myNodeId)
+                put("hardwareId", DeviceTelemetryProvider.getHardwareId())
+                put("deviceName", myCallsign)
+                put("callsign", myCallsign)
+                put("connectionType", connType)
+            }
+            try {
+                writer.write(handshake.toString() + "\n")
+                writer.flush()
+            } catch (e: IOException) {
+                Log.w("TacticalMesh", "[$connType] Inbound handshake write failed: ${e.message}")
+            }
+
             refreshConnectedPeersState()
+            _connectionStatus.value = ConnectionStatus.CONNECTED
+            telemetryProvider.updateConnectedPeerInfo(peer.name, -50, 10)
             Log.i("TacticalMesh", "[$connType] TCP link established with $key")
 
             while (isActive && !socket.isClosed) {
@@ -579,6 +616,23 @@ class TacticalMeshTransport(
             )
             peerMap[key] = peer
             peerLastSeen[key] = System.currentTimeMillis()
+
+            // Send Handshake over Bluetooth link so client/peer learns server identity
+            val handshake = JSONObject().apply {
+                put("type", "HANDSHAKE")
+                put("nodeId", myNodeId)
+                put("hardwareId", DeviceTelemetryProvider.getHardwareId())
+                put("deviceName", myCallsign)
+                put("callsign", myCallsign)
+                put("connectionType", "BLUETOOTH")
+            }
+            try {
+                writer.write(handshake.toString() + "\n")
+                writer.flush()
+            } catch (e: IOException) {
+                Log.w("TacticalMesh", "[BLUETOOTH] Inbound handshake write failed: ${e.message}")
+            }
+
             refreshConnectedPeersState()
             _connectionStatus.value = ConnectionStatus.CONNECTED
             telemetryProvider.updateConnectedPeerInfo(peer.name, -55, 14)
@@ -848,7 +902,7 @@ class TacticalMeshTransport(
                 }
             } catch (e: Throwable) {
                 if (e !is CancellationException) {
-                    Log.e("TacticalMesh", "Connection to ${peer.name} failed: ${e.message}", e)
+                    Log.w("TacticalMesh", "Connection to ${peer.name} failed: ${e.message}")
                 }
                 closePeerLink(peer.address)
             }
@@ -858,19 +912,24 @@ class TacticalMeshTransport(
     @SuppressLint("MissingPermission")
     private suspend fun createBluetoothRfcommSocket(device: BluetoothDevice): BluetoothSocket {
         val adapter = bluetoothAdapter
-        try { adapter?.cancelDiscovery() } catch (_: Throwable) {}
+        try {
+            adapter?.cancelDiscovery()
+            delay(150) // Give hardware controller time to stop scanning before RFCOMM handshake
+        } catch (_: Throwable) {}
 
         var lastException: Exception = IOException("Failed to establish Bluetooth RFCOMM connection to ${device.address}")
 
         // 1. Insecure RFCOMM socket via UUID (Standard Android)
         for (attempt in 1..2) {
+            var socket: BluetoothSocket? = null
             try {
                 Log.i("TacticalMesh", "[BLUETOOTH] Attempt $attempt (Insecure UUID): Connecting to ${device.address}")
-                val socket = device.createInsecureRfcommSocketToServiceRecord(meshBluetoothUuid)
+                socket = device.createInsecureRfcommSocketToServiceRecord(meshBluetoothUuid)
                 socket.connect()
                 Log.i("TacticalMesh", "[BLUETOOTH] RFCOMM connected successfully via Insecure UUID on attempt $attempt")
                 return socket
             } catch (e: Exception) {
+                try { socket?.close() } catch (_: Throwable) {}
                 lastException = e
                 Log.w("TacticalMesh", "[BLUETOOTH] Attempt $attempt (Insecure UUID) failed: ${e.message}")
                 if (attempt < 2) delay(600)
@@ -878,32 +937,40 @@ class TacticalMeshTransport(
         }
 
         // 2. Secure RFCOMM socket via UUID (Fallback for devices requiring encrypted/paired link)
+        var secureSocket: BluetoothSocket? = null
         try {
             Log.i("TacticalMesh", "[BLUETOOTH] Fallback (Secure UUID): Connecting to ${device.address}")
-            val socket = device.createRfcommSocketToServiceRecord(meshBluetoothUuid)
-            socket.connect()
+            secureSocket = device.createRfcommSocketToServiceRecord(meshBluetoothUuid)
+            secureSocket.connect()
             Log.i("TacticalMesh", "[BLUETOOTH] Secure RFCOMM connected successfully via Secure UUID")
-            return socket
+            return secureSocket
         } catch (e: Exception) {
+            try { secureSocket?.close() } catch (_: Throwable) {}
             lastException = e
             Log.w("TacticalMesh", "[BLUETOOTH] Secure RFCOMM fallback failed: ${e.message}")
             delay(600)
         }
 
-        // 3. Reflection Fallback to RFCOMM Channels 1..3 (Fixes Samsung Galaxy A34 / LocalSocketImpl Broken pipe)
+        // 3. Reflection Fallback to RFCOMM Channels 1..3 (Fixes Samsung / LocalSocketImpl Broken pipe & read ret: -1)
         for (channel in 1..3) {
+            var reflSocket: BluetoothSocket? = null
             try {
                 Log.i("TacticalMesh", "[BLUETOOTH] Reflection fallback (Channel $channel): Connecting to ${device.address}")
-                val method = device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
-                val socket = method.invoke(device, channel) as BluetoothSocket
-                socket.connect()
+                val method = try {
+                    device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+                } catch (_: Exception) {
+                    device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+                }
+                reflSocket = method.invoke(device, channel) as BluetoothSocket
+                reflSocket.connect()
                 Log.i("TacticalMesh", "[BLUETOOTH] RFCOMM connected successfully via Reflection Channel $channel")
-                return socket
+                return reflSocket
             } catch (e: Exception) {
+                try { reflSocket?.close() } catch (_: Throwable) {}
                 val realEx = (e as? InvocationTargetException)?.targetException ?: e
                 lastException = realEx as? Exception ?: Exception(realEx)
                 Log.w("TacticalMesh", "[BLUETOOTH] Reflection channel $channel fallback failed: ${realEx.message}")
-                delay(600)
+                if (channel < 3) delay(600)
             }
         }
 
@@ -1166,8 +1233,17 @@ class TacticalMeshTransport(
             }
         }
 
-        val rawConnected = peerLinks.keys.mapNotNull { key ->
-            peerMap[key] ?: peerMap.values.find { it.id == key || it.address.equals(key, ignoreCase = true) }
+        val rawConnected = peerLinks.keys.map { key ->
+            peerMap[key]
+                ?: peerMap.values.find { it.id == key || it.address.equals(key, ignoreCase = true) }
+                ?: PeerDevice(
+                    id = key,
+                    name = "Connected Peer (${key.takeLast(5)})",
+                    address = key,
+                    protocol = peerLinks[key]?.protocol ?: _activeProtocol.value,
+                    isConnected = true,
+                    signalStrengthDbm = -50
+                )
         }
 
         val dedupedConnected = LinkedHashMap<String, PeerDevice>()
@@ -1497,23 +1573,6 @@ class TacticalMeshTransport(
             }
         } catch (e: SecurityException) {}
 
-        val rawName = try { device.name ?: record?.deviceName } catch (e: SecurityException) { record?.deviceName }
-        if (!rawName.isNullOrBlank()) {
-            val myCallsign = telemetryProvider.telemetry.value.nodeCallsign
-            if (myCallsign.isNotBlank() && rawName.equals(myCallsign, ignoreCase = true)) return true
-
-            val customName = try { PreferenceManager(context).getCustomDeviceName() } catch (e: Throwable) { null }
-            if (!customName.isNullOrBlank() && rawName.equals(customName, ignoreCase = true)) return true
-
-            try {
-                val localBtName = bluetoothAdapter?.name
-                if (!localBtName.isNullOrBlank() && rawName.equals(localBtName, ignoreCase = true)) return true
-            } catch (e: SecurityException) {}
-
-            val defaultCallsign = DeviceTelemetryProvider.buildDeviceCallsign(context)
-            if (defaultCallsign.isNotBlank() && rawName.equals(defaultCallsign, ignoreCase = true)) return true
-        }
-
         return false
     }
 
@@ -1535,27 +1594,27 @@ class TacticalMeshTransport(
             return true
         }
 
-        // 4. Callsign / Custom Device Name matches
+        // 4. Bluetooth Adapter Address match
+        try {
+            val localBtAddress = bluetoothAdapter?.address
+            if (!localBtAddress.isNullOrBlank() && localBtAddress != "02:00:00:00:00:00" && peer.address.equals(localBtAddress, ignoreCase = true)) {
+                return true
+            }
+        } catch (e: SecurityException) {}
+
+        // If the peer has a valid non-blank address or holds an active socket connection link,
+        // it cannot be "self" unless it matched the hardware/address/IP/NodeId checks above.
+        // DO NOT match by peer.name alone for peers with addresses or established links!
+        if (peer.address.isNotBlank() || peerLinks.containsKey(peer.id) || peerLinks.containsKey(peer.address)) {
+            return false
+        }
+
+        // 5. Fallback for address-less broadcast candidates
         val myCallsign = telemetryProvider.telemetry.value.nodeCallsign
         if (myCallsign.isNotBlank() && peer.name.equals(myCallsign, ignoreCase = true)) return true
 
         val customName = try { PreferenceManager(context).getCustomDeviceName() } catch (e: Throwable) { null }
         if (!customName.isNullOrBlank() && peer.name.equals(customName, ignoreCase = true)) return true
-
-        // 5. Bluetooth Adapter Name / Address matches
-        try {
-            val localBtName = bluetoothAdapter?.name
-            if (!localBtName.isNullOrBlank() && peer.name.equals(localBtName, ignoreCase = true)) return true
-
-            val localBtAddress = bluetoothAdapter?.address
-            if (!localBtAddress.isNullOrBlank() && localBtAddress != "02:00:00:00:00:00" && peer.address.equals(localBtAddress, ignoreCase = true)) return true
-        } catch (e: SecurityException) {}
-
-        // 6. Default Callsign matches
-        val defaultCallsign = DeviceTelemetryProvider.buildDeviceCallsign(context)
-        if (defaultCallsign.isNotBlank() && peer.name.equals(defaultCallsign, ignoreCase = true)) {
-            return true
-        }
 
         return false
     }

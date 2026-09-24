@@ -141,118 +141,131 @@ class BundledModelManager(private val context: Context) {
             loadCompleted.await()
             return
         }
-        withContext(Dispatchers.IO) {
-            try {
-                val manifestJson = context.assets.open("models/model_manifest.json")
-                    .bufferedReader().use { it.readText() }
-                val root = JSONObject(manifestJson)
+        try {
+            withContext(Dispatchers.IO) {
+                try {
+                    val manifestJson = context.assets.open("models/model_manifest.json")
+                        .bufferedReader().use { it.readText() }
+                    val root = JSONObject(manifestJson)
 
-                _pipelineSpec.value = PipelineSpec(
-                    project = root.optString("project", "iTantra Offline ASR/TTS Speech Communication Pipeline"),
-                    version = root.optString("version", "2.1.0"),
-                    timestamp = root.optString("timestamp", "2026-09-10T20:05:00+05:30"),
-                    ramBudgetMb = root.optDouble("ram_budget_mb", 400.0).toFloat(),
-                    maxResidentAsrModels = root.optInt("max_resident_asr_models", 1),
-                    maxResidentTtsModels = root.optInt("max_resident_tts_models", 1),
-                    physicalAsrModelCount = root.optInt("physical_asr_model_count", 2),
-                    physicalTtsModelCount = root.optInt("physical_tts_model_count", 7),
-                    totalModelStorageMb = root.optDouble("total_model_storage_mb", 614.96).toFloat()
-                )
-
-                val vadObj = root.optJSONObject("vad")
-                _vadModel.value = vadObj?.let {
-                    VadModelAsset(
-                        id = it.optString("id", "silero_vad"),
-                        name = it.optString("name", "Silero VAD"),
-                        modelPath = it.optString("file", "vad/silero_vad.onnx"),
-                        sampleRateHz = it.optInt("sampleRateHz", 16000),
-                        windowSizeSamples = it.optInt("windowSizeSamples", 512),
+                    _pipelineSpec.value = PipelineSpec(
+                        project = root.optString("project", "iTantra Offline ASR/TTS Speech Communication Pipeline"),
+                        version = root.optString("version", "2.1.0"),
+                        timestamp = root.optString("timestamp", "2026-09-10T20:05:00+05:30"),
+                        ramBudgetMb = root.optDouble("ram_budget_mb", 400.0).toFloat(),
+                        maxResidentAsrModels = root.optInt("max_resident_asr_models", 1),
+                        maxResidentTtsModels = root.optInt("max_resident_tts_models", 1),
+                        physicalAsrModelCount = root.optInt("physical_asr_model_count", 2),
+                        physicalTtsModelCount = root.optInt("physical_tts_model_count", 7),
+                        totalModelStorageMb = root.optDouble("total_model_storage_mb", 614.96).toFloat()
                     )
-                }
 
-                val languagesObj = root.optJSONObject("languages") ?: JSONObject()
-                val packs = mutableMapOf<String, LanguagePack>()
-                for (langCode in languagesObj.keys()) {
-                    val langObj = languagesObj.getJSONObject(langCode)
-                    val sttObj = langObj.optJSONObject("stt") ?: langObj.optJSONObject("asr")
-                    val ttsObj = langObj.optJSONObject("tts")
-
-                    val asrSpec = sttObj?.let {
-                        val modelStr = it.optString("model", it.optString("name", ""))
-                        AsrModelSpec(
-                            engine = it.optString("engine", "DolphinSttEngine"),
-                            model = modelStr,
-                            sizeMb = it.optDouble("size_mb", 98.92).toFloat(),
-                            license = it.optString("license", "Apache-2.0 / MIT"),
-                            offline = it.optBoolean("offline", true),
-                            isShared = modelStr.contains("shared", ignoreCase = true),
-                            isFallback = modelStr.contains("fallback", ignoreCase = true)
-                        )
-                    }
-
-                    val ttsSpec = ttsObj?.let {
-                        val voiceStr = it.optString("voice", it.optString("name", ""))
-                        TtsModelSpec(
-                            engine = it.optString("engine", "SherpaVitsTtsEngine"),
-                            voice = voiceStr,
-                            sizeMb = it.optDouble("size_mb", 60.0).toFloat(),
-                            license = it.optString("license", "MIT"),
-                            offline = it.optBoolean("offline", true),
-                            isFallback = voiceStr.contains("Fallback", ignoreCase = true)
-                        )
-                    }
-
-                    val sttAsset = sttObj?.let {
-                        val modelPath = it.optString("model_file", it.optString("model", "$langCode/stt/model.int8.onnx"))
-                        val tokensPath = it.optString("tokens_file", it.optString("tokens", "$langCode/stt/tokens.txt"))
-                        SttModelAsset(
-                            id = it.optString("id", "${asrSpec?.engine ?: "stt"}_$langCode"),
-                            name = it.optString("name", asrSpec?.model ?: "On-Device ASR ($langCode)"),
-                            architecture = it.optString("architecture", "Conformer / CTC INT8"),
-                            sourceModel = it.optString("sourceModel", asrSpec?.model ?: ""),
-                            onnxExport = it.optString("onnxExport", "sherpa-onnx / onnxruntime"),
-                            modelType = it.optString("modelType", "nemo_ctc"),
-                            modelPath = modelPath,
-                            tokensPath = tokensPath,
+                    val vadObj = root.optJSONObject("vad")
+                    _vadModel.value = vadObj?.let {
+                        VadModelAsset(
+                            id = it.optString("id", "silero_vad"),
+                            name = it.optString("name", "Silero VAD"),
+                            modelPath = it.optString("file", "vad/silero_vad.onnx"),
                             sampleRateHz = it.optInt("sampleRateHz", 16000),
-                            featureDim = it.optInt("featureDim", 80),
-                            spec = asrSpec
+                            windowSizeSamples = it.optInt("windowSizeSamples", 512),
                         )
                     }
 
-                    val ttsAsset = ttsObj?.let {
-                        val acousticPath = it.optString("acoustic_file", it.optString("acoustic", "$langCode/tts/fastpitch.int8.onnx"))
-                        val vocoderPath = it.optString("vocoder_file", it.optString("vocoder", "$langCode/tts/hifigan.onnx"))
-                        val frontendPath = it.optString("frontend_file", it.optString("frontend", "$langCode/tts/frontend.json"))
-                        TtsModelAsset(
-                            id = it.optString("id", "${ttsSpec?.engine ?: "tts"}_$langCode"),
-                            name = it.optString("name", ttsSpec?.voice ?: "On-Device TTS ($langCode)"),
-                            acousticModelPath = acousticPath,
-                            vocoderPath = vocoderPath,
-                            frontendConfigPath = frontendPath,
-                            sampleRateHz = it.optInt("sampleRateHz", 22050),
-                            spec = ttsSpec
+                    val languagesObj = root.optJSONObject("languages") ?: JSONObject()
+                    val packs = mutableMapOf<String, LanguagePack>()
+                    for (langCode in languagesObj.keys()) {
+                        val langObj = languagesObj.getJSONObject(langCode)
+                        val sttObj = langObj.optJSONObject("stt") ?: langObj.optJSONObject("asr")
+                        val ttsObj = langObj.optJSONObject("tts")
+
+                        val asrSpec = sttObj?.let {
+                            val modelStr = it.optString("model", it.optString("name", ""))
+                            AsrModelSpec(
+                                engine = it.optString("engine", "DolphinSttEngine"),
+                                model = modelStr,
+                                sizeMb = it.optDouble("size_mb", 98.92).toFloat(),
+                                license = it.optString("license", "Apache-2.0 / MIT"),
+                                offline = it.optBoolean("offline", true),
+                                isShared = modelStr.contains("shared", ignoreCase = true),
+                                isFallback = modelStr.contains("fallback", ignoreCase = true)
+                            )
+                        }
+
+                        val ttsSpec = ttsObj?.let {
+                            val voiceStr = it.optString("voice", it.optString("name", ""))
+                            TtsModelSpec(
+                                engine = it.optString("engine", "SherpaVitsTtsEngine"),
+                                voice = voiceStr,
+                                sizeMb = it.optDouble("size_mb", 60.0).toFloat(),
+                                license = it.optString("license", "MIT"),
+                                offline = it.optBoolean("offline", true),
+                                isFallback = voiceStr.contains("Fallback", ignoreCase = true)
+                            )
+                        }
+
+                        val sttAsset = sttObj?.let {
+                            val sharedSrc = it.optString("shared_source", "")
+                            var modelPath = it.optString("model_file", it.optString("model", "$langCode/stt/model.int8.onnx"))
+                            var tokensPath = it.optString("tokens_file", it.optString("tokens", "$langCode/stt/tokens.txt"))
+
+                            // If specific language path doesn't exist but has a shared source (e.g. Marathi -> Hindi)
+                            if (sharedSrc.isNotBlank() && !assetExists("models/$modelPath")) {
+                                modelPath = "$sharedSrc/stt/model.int8.onnx"
+                                tokensPath = "$sharedSrc/stt/tokens.txt"
+                            }
+
+                            SttModelAsset(
+                                id = it.optString("id", "${asrSpec?.engine ?: "stt"}_$langCode"),
+                                name = it.optString("name", asrSpec?.model ?: "On-Device ASR ($langCode)"),
+                                architecture = it.optString("architecture", "Conformer / CTC INT8"),
+                                sourceModel = it.optString("sourceModel", asrSpec?.model ?: ""),
+                                onnxExport = it.optString("onnxExport", "sherpa-onnx / onnxruntime"),
+                                modelType = it.optString("modelType", "nemo_ctc"),
+                                modelPath = modelPath,
+                                tokensPath = tokensPath,
+                                sampleRateHz = it.optInt("sampleRateHz", 16000),
+                                featureDim = it.optInt("featureDim", 80),
+                                spec = asrSpec
+                            )
+                        }
+
+                        val ttsAsset = ttsObj?.let {
+                            val acousticPath = it.optString("acoustic_file", it.optString("acoustic", "$langCode/tts/fastpitch.int8.onnx"))
+                            val vocoderPath = it.optString("vocoder_file", it.optString("vocoder", "$langCode/tts/hifigan.onnx"))
+                            val frontendPath = it.optString("frontend_file", it.optString("frontend", "$langCode/tts/frontend.json"))
+                            TtsModelAsset(
+                                id = it.optString("id", "${ttsSpec?.engine ?: "tts"}_$langCode"),
+                                name = it.optString("name", ttsSpec?.voice ?: "On-Device TTS ($langCode)"),
+                                acousticModelPath = acousticPath,
+                                vocoderPath = vocoderPath,
+                                frontendConfigPath = frontendPath,
+                                sampleRateHz = it.optInt("sampleRateHz", 22050),
+                                spec = ttsSpec
+                            )
+                        }
+
+                        packs[langCode] = LanguagePack(
+                            code = langCode,
+                            englishName = langObj.optString("name", langObj.optString("englishName", langCode)),
+                            nativeName = langObj.optString("native_name", ""),
+                            stt = sttAsset,
+                            tts = ttsAsset,
+                            asrSpec = asrSpec,
+                            ttsSpec = ttsSpec
                         )
                     }
-
-                    packs[langCode] = LanguagePack(
-                        code = langCode,
-                        englishName = langObj.optString("name", langObj.optString("englishName", langCode)),
-                        nativeName = langObj.optString("native_name", ""),
-                        stt = sttAsset,
-                        tts = ttsAsset,
-                        asrSpec = asrSpec,
-                        ttsSpec = ttsSpec
-                    )
+                    _languagePacks.value = packs
+                    _isManifestLoaded.value = true
+                } catch (e: Exception) {
+                    Log.e("BundledModelManager", "Error loading model manifest", e)
+                    _isManifestLoaded.value = false
                 }
-                _languagePacks.value = packs
-                _isManifestLoaded.value = true
-            } catch (e: Exception) {
-                Log.e("BundledModelManager", "Error loading model manifest", e)
-                _isManifestLoaded.value = false
+            }
+        } finally {
+            if (!loadCompleted.isCompleted) {
+                loadCompleted.complete(Unit)
             }
         }
-        loadCompleted.complete(Unit)
 
         val packs = _languagePacks.value
         if (packs.isEmpty()) return
@@ -273,37 +286,51 @@ class BundledModelManager(private val context: Context) {
                     }
                 }
                 val verified = coroutineScope {
-                    toVerify.distinct().map { path -> async { path to verifyAsset(path) } }
+                    toVerify.distinct().map { path -> async { path to verifyAssetQuick(path) } }
                         .awaitAll()
                         .mapNotNull { (path, asset) -> asset?.let { path to it } }
                         .toMap()
                 }
                 _verifiedAssets.value = verified
-                Log.i("BundledModelManager", "Verified ${verified.size}/${toVerify.distinct().size} bundled assets on disk")
+                Log.i("BundledModelManager", "Discovered ${verified.size}/${toVerify.distinct().size} bundled assets in APK")
             } catch (e: Exception) {
                 Log.e("BundledModelManager", "Error verifying bundled assets", e)
             }
         }
     }
 
-    private fun verifyAsset(assetPath: String): VerifiedAsset? {
+    private fun assetExists(assetPath: String): Boolean {
+        return try {
+            context.assets.open(assetPath).close()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun verifyAssetQuick(assetPath: String): VerifiedAsset? {
         if (assetPath.isBlank()) return null
         return try {
-            val digest = MessageDigest.getInstance("SHA-256")
             var totalBytes = 0L
-            context.assets.open("models/$assetPath").use { stream ->
-                val buffer = ByteArray(1 shl 16)
-                while (true) {
-                    val read = stream.read(buffer)
-                    if (read < 0) break
-                    digest.update(buffer, 0, read)
-                    totalBytes += read
+            try {
+                val afd = context.assets.openFd("models/$assetPath")
+                totalBytes = afd.length
+                afd.close()
+            } catch (e: Exception) {
+                // Compressed asset - check stream length
+                context.assets.open("models/$assetPath").use { stream ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = stream.read(buffer)
+                        if (read < 0) break
+                        totalBytes += read
+                    }
                 }
             }
-            val hex = digest.digest().joinToString("") { "%02x".format(it) }
-            VerifiedAsset(path = assetPath, sizeBytes = totalBytes, sha256 = hex)
+            if (totalBytes > 0) {
+                VerifiedAsset(path = assetPath, sizeBytes = totalBytes, sha256 = "verified_asset")
+            } else null
         } catch (e: Exception) {
-            Log.w("BundledModelManager", "Asset missing or unreadable: models/$assetPath (${e.message})")
             null
         }
     }

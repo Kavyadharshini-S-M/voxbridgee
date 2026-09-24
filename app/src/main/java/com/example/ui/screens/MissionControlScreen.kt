@@ -527,11 +527,11 @@ fun MissionControlScreen(
         LanguageSelectionSheet(
             selectedLanguage = uiState.selectedLanguage,
             onLanguageSelected = { lang ->
-                viewModel.selectOrDownloadLanguage(lang)
+                viewModel.setSelectedLanguage(lang)
+                showLanguageSheet = false
             },
             onDismiss = { showLanguageSheet = false },
-            onPreviewAudio = { lang -> viewModel.testTtsAudio(lang.sampleAlertPhrase) },
-            modelDownloader = viewModel.onDemandModelDownloader
+            onPreviewAudio = { lang -> viewModel.testTtsAudio(lang.sampleAlertPhrase) }
         )
     }
 }

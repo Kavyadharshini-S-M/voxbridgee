@@ -109,20 +109,32 @@ class IndicTtsEngine(
         }
     }
 
+    companion object {
+        private val extractionLock = Any()
+    }
+
     /** Same extract-once-then-load-by-path pattern as IndicSttEngine.extractAssetToFile —
-     *  see the comment in ensureModelsForLanguage() for why. */
-    private fun extractAssetToFile(relPath: String): String? {
+     *  thread-safe with atomic rename. */
+    private fun extractAssetToFile(relPath: String): String? = synchronized(extractionLock) {
         if (relPath.isBlank()) return null
         val outFile = java.io.File(context.filesDir, "models_cache/$relPath")
-        val expectedSize = bundledModelManager.verifiedAssets.value[relPath]?.sizeBytes
-        if (!outFile.exists() || (expectedSize != null && outFile.length() != expectedSize)) {
-            outFile.parentFile?.mkdirs()
-            try {
-                context.assets.open("models/$relPath").use { input ->
-                    outFile.outputStream().use { output -> input.copyTo(output, bufferSize = 1 shl 20) }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Asset models/$relPath not present, will use system fallback TTS")
+        if (outFile.exists() && outFile.length() > 0) {
+            return outFile.absolutePath
+        }
+        val tmpFile = java.io.File(context.filesDir, "models_cache/$relPath.tmp")
+        outFile.parentFile?.mkdirs()
+        try {
+            context.assets.open("models/$relPath").use { input ->
+                tmpFile.outputStream().use { output -> input.copyTo(output, bufferSize = 1 shl 20) }
+            }
+            if (tmpFile.exists() && tmpFile.length() > 0) {
+                if (outFile.exists()) outFile.delete()
+                tmpFile.renameTo(outFile)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Asset models/$relPath not present or failed to extract: ${e.message}")
+            if (tmpFile.exists()) tmpFile.delete()
+            if (!outFile.exists() || outFile.length() == 0L) {
                 return null
             }
         }

@@ -64,7 +64,6 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
     val alertAudioManager = AlertAudioManager(context)
     val tacticalAlertManager = com.example.audio.TacticalAlertManager(context)
     val acousticPairingManager = com.example.audio.AcousticPairingManager(context, viewModelScope)
-    val onDemandModelDownloader = com.example.model.OnDemandModelDownloader(context, viewModelScope)
     val ultrasonicTransceiver = acousticPairingManager // Alias for backwards compatibility
     private var lastSynthesizedSpeech: Pair<String, SupportedLanguage>? = null
     // Shared across both engines: each would otherwise construct its own
@@ -298,25 +297,6 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
         preferenceManager.setDefaultLanguage(lang.code)
         sttEngine.setLanguage(lang)
         ttsEngine.preload(lang)
-    }
-
-    fun selectOrDownloadLanguage(lang: SupportedLanguage, onComplete: () -> Unit = {}) {
-        if (onDemandModelDownloader.isLanguageModelAvailable(lang)) {
-            setSelectedLanguage(lang)
-            onComplete()
-        } else {
-            onDemandModelDownloader.downloadLanguageModel(
-                lang = lang,
-                onSuccess = {
-                    setSelectedLanguage(lang)
-                    onComplete()
-                },
-                onError = {
-                    setSelectedLanguage(lang)
-                    onComplete()
-                }
-            )
-        }
     }
 
     fun setForceMaxVolumeAlerts(force: Boolean) {

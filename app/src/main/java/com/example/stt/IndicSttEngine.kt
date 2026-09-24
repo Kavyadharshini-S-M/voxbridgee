@@ -138,9 +138,6 @@ class IndicSttEngine(
      */
     private fun extractAssetToFile(relPath: String): String? {
         val outFile = java.io.File(context.filesDir, "models_cache/$relPath")
-        if (outFile.exists() && outFile.length() > 0) {
-            return outFile.absolutePath
-        }
         val expectedSize = bundledModelManager.verifiedAssets.value[relPath]?.sizeBytes
         if (!outFile.exists() || (expectedSize != null && outFile.length() != expectedSize)) {
             outFile.parentFile?.mkdirs()
@@ -149,10 +146,8 @@ class IndicSttEngine(
                     outFile.outputStream().use { output -> input.copyTo(output, bufferSize = 1 shl 20) }
                 }
             } catch (e: Exception) {
-                Log.d(TAG, "Asset 'models/$relPath' not in APK package: ${e.message}")
-                if (!outFile.exists() || outFile.length() == 0L) {
-                    return null
-                }
+                Log.e(TAG, "Required model asset 'models/$relPath' missing from APK: ${e.message}")
+                return null
             }
         }
         return if (outFile.exists() && outFile.length() > 0) outFile.absolutePath else null
