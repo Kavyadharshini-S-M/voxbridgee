@@ -32,15 +32,7 @@ No internet. No cell towers. No cloud. Speak in your language, the person on the
 
 <br/>
 
-## Demo
 
-<div align="center">
-
-![iTantra demo](docs/demo.gif)
-
-<sub>GIF preview (no audio) — [watch the full video with sound](docs/demo.mp4).</sub>
-
-</div>
 
 ## Table of contents
 
