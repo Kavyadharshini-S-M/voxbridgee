@@ -45,6 +45,8 @@ class IndicTrans2Translator(
     private var idToVocab: Map<Long, String> = emptyMap()
     private val modelLock = Mutex()
     private var isInitialized = false
+    @Volatile private var lastProcessedText: String = ""
+    @Volatile private var lastTranslationResult: TranslationResult? = null
 
     companion object {
         private val extractionLock = Any()
@@ -160,6 +162,12 @@ class IndicTrans2Translator(
             return@withContext TranslationResult(trimmed, source, target, isNeuralTranslation = false)
         }
 
+        // Translation Loop Guard: Prevent duplicate sentence translation loops and redundant inference cycles
+        val cached = lastTranslationResult
+        if (trimmed == lastProcessedText.trim() && cached != null && cached.sourceLanguage == source && cached.targetLanguage == target) {
+            return@withContext cached
+        }
+
         val actualSource = source
 
         // On-Demand Session Loading: Load only when source != target
@@ -172,12 +180,15 @@ class IndicTrans2Translator(
             try {
                 val neuralTranslation = runNeuralInference(trimmed, actualSource, target, enc, dec)
                 if (neuralTranslation.isNotBlank()) {
-                    return@withContext TranslationResult(
+                    val result = TranslationResult(
                         translatedText = neuralTranslation,
                         sourceLanguage = actualSource,
                         targetLanguage = target,
                         isNeuralTranslation = true
                     )
+                    lastProcessedText = trimmed
+                    lastTranslationResult = result
+                    return@withContext result
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Neural NMT inference error, using high-precision fallback", e)
@@ -186,12 +197,15 @@ class IndicTrans2Translator(
 
         // 2. High-precision rule & concept dictionary fallback for instantaneous arbitrary translation
         val fallbackResult = BundledOfflineTranslator.translate(trimmed, actualSource, target)
-        TranslationResult(
+        val result = TranslationResult(
             translatedText = fallbackResult.translatedText,
             sourceLanguage = actualSource,
             targetLanguage = target,
             isNeuralTranslation = false
         )
+        lastProcessedText = trimmed
+        lastTranslationResult = result
+        result
     }
 
     private suspend fun runNeuralInference(

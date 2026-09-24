@@ -28,6 +28,8 @@ import android.net.wifi.WpsInfo
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
+import com.example.data.ITantraDatabase
+import com.example.data.PendingTransmissionEntity
 import com.example.data.PreferenceManager
 import com.example.model.AlertPriority
 import com.example.model.ConnectionStatus
@@ -104,7 +106,7 @@ class TacticalMeshTransport(
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
 
-    private val _activeProtocol = MutableStateFlow(TransportProtocol.WIFI_DIRECT)
+    private val _activeProtocol = MutableStateFlow(TransportProtocol.BLUETOOTH)
     override val activeProtocol: StateFlow<TransportProtocol> = _activeProtocol.asStateFlow()
 
     private val _discoveredPeers = MutableStateFlow<List<PeerDevice>>(emptyList())
@@ -118,6 +120,23 @@ class TacticalMeshTransport(
 
     private val _incomingPackets = MutableSharedFlow<NetworkPacket>(extraBufferCapacity = 64)
     override val incomingPackets: SharedFlow<NetworkPacket> = _incomingPackets.asSharedFlow()
+
+    // Store-and-Forward Room Queue
+    private val pendingTransmissionDao by lazy {
+        ITantraDatabase.getInstance(context).pendingTransmissionDao()
+    }
+
+    // Bluetooth LE Bridge for ESP32 LoRa Gateway Node (SX1278 Ra-02)
+    val loraGatewayManager: LoraGatewayManager by lazy {
+        LoraGatewayManager(context, scope) { loraPacket ->
+            if (seenPacketIds.putIfAbsent(loraPacket.packetId, System.currentTimeMillis()) == null) {
+                Log.i("TacticalMesh", "[LORA_BLE] Inbound packet from ESP32 LoRa Gateway: ${loraPacket.packetId} (${loraPacket.text})")
+                scope.launch(exceptionHandler) {
+                    _incomingPackets.emit(loraPacket)
+                }
+            }
+        }
+    }
 
     // Sockets & Transceiver infrastructure
     private val udpPort = 8888
@@ -305,6 +324,23 @@ class TacticalMeshTransport(
         startBeaconBroadcaster()
         startPeerPruning()
         registerBluetoothDiscoveryReceiver()
+        startLoraGatewayIntegration()
+    }
+
+    private fun startLoraGatewayIntegration() {
+        scope.launch(Dispatchers.IO + exceptionHandler) {
+            try {
+                loraGatewayManager.startScan()
+            } catch (e: Throwable) {
+                Log.w("TacticalMesh", "Initial LoRa gateway BLE scan deferred: ${e.message}")
+            }
+            loraGatewayManager.isGatewayConnected.collect { isConnected ->
+                if (isConnected) {
+                    Log.i("TacticalMesh", "[LORA_BLE] ESP32 LoRa Gateway connected. Triggering store-and-forward flush.")
+                    flushPendingQueue()
+                }
+            }
+        }
     }
 
     private fun initializeWifiP2p() {
@@ -498,6 +534,7 @@ class TacticalMeshTransport(
                 put("hardwareId", DeviceTelemetryProvider.getHardwareId(context))
                 put("deviceName", myCallsign)
                 put("callsign", myCallsign)
+                put("batteryLevel", telemetry.value.batteryPercent)
                 put("connectionType", connType)
             }
             try {
@@ -545,11 +582,18 @@ class TacticalMeshTransport(
             try {
                 val adapter = bluetoothAdapter
                 if (adapter != null && adapter.isEnabled) {
-                    bluetoothServerSocket = adapter.listenUsingRfcommWithServiceRecord(
-                        "iTantraTacticalMesh",
-                        meshBluetoothUuid
-                    )
-                    Log.i("TacticalMesh", "Bluetooth RFCOMM Server listening for peer connections")
+                    bluetoothServerSocket = try {
+                        adapter.listenUsingInsecureRfcommWithServiceRecord(
+                            "iTantraTacticalMesh",
+                            meshBluetoothUuid
+                        )
+                    } catch (e: Throwable) {
+                        adapter.listenUsingRfcommWithServiceRecord(
+                            "iTantraTacticalMesh",
+                            meshBluetoothUuid
+                        )
+                    }
+                    Log.i("TacticalMesh", "Bluetooth RFCOMM Server listening for peer connections (Insecure / Ad-Hoc)")
 
                     while (isActive) {
                         val clientSocket = try {
@@ -562,7 +606,7 @@ class TacticalMeshTransport(
                             break
                         } ?: break
 
-                        Log.i("TacticalMesh", "Inbound Bluetooth connection from ${clientSocket.remoteDevice.name}")
+                        Log.i("TacticalMesh", "Inbound Bluetooth connection accepted from ${clientSocket.remoteDevice?.name ?: clientSocket.remoteDevice?.address}")
                         scope.launch(Dispatchers.IO + exceptionHandler) {
                             handleInboundBluetoothConnection(clientSocket)
                         }
@@ -624,6 +668,7 @@ class TacticalMeshTransport(
                 put("hardwareId", DeviceTelemetryProvider.getHardwareId(context))
                 put("deviceName", myCallsign)
                 put("callsign", myCallsign)
+                put("batteryLevel", telemetry.value.batteryPercent)
                 put("connectionType", "BLUETOOTH")
             }
             try {
@@ -848,6 +893,7 @@ class TacticalMeshTransport(
                                 put("hardwareId", DeviceTelemetryProvider.getHardwareId(context))
                                 put("deviceName", myCallsign)
                                 put("callsign", myCallsign)
+                                put("batteryLevel", telemetry.value.batteryPercent)
                                 put("connectionType", "BLUETOOTH")
                             }
                             try {
@@ -1064,6 +1110,7 @@ class TacticalMeshTransport(
                 put("hardwareId", DeviceTelemetryProvider.getHardwareId(context))
                 put("deviceName", myCallsign)
                 put("callsign", myCallsign)
+                put("batteryLevel", telemetry.value.batteryPercent)
                 put("connectionType", connectionType)
             }
             writer.write(handshake.toString() + "\n")
@@ -1279,6 +1326,7 @@ class TacticalMeshTransport(
             _connectionStatus.value = ConnectionStatus.CONNECTED
             val primary = peers.first()
             telemetryProvider.updateConnectedPeerInfo(primary.name, primary.signalStrengthDbm, 12)
+            flushPendingQueue()
         } else {
             _connectionStatus.value = ConnectionStatus.DISCONNECTED
             telemetryProvider.updateConnectedPeerInfo("NO-PEER-CONNECTED", -90, 0)
@@ -1287,13 +1335,29 @@ class TacticalMeshTransport(
     }
 
     // ==========================================
-    // Real Packet Transmission
+    // Real Packet Transmission & Store-and-Forward
     // ==========================================
 
     override fun sendPacket(packet: NetworkPacket): Boolean {
         scope.launch(Dispatchers.IO + exceptionHandler) {
             try {
                 seenPacketIds[packet.packetId] = System.currentTimeMillis()
+
+                // Extract lat / lon if embedded in text (e.g. "[GPS: 12.9716, 77.5946]")
+                var lat = 0.0
+                var lon = 0.0
+                val gpsRegex = Regex("""\[GPS:\s*([0-9.-]+),\s*([0-9.-]+)\]""")
+                val match = gpsRegex.find(packet.text)
+                if (match != null) {
+                    lat = match.groupValues[1].toDoubleOrNull() ?: 0.0
+                    lon = match.groupValues[2].toDoubleOrNull() ?: 0.0
+                }
+
+                // 1. High-Priority LoRa Route: Route SOS and Critical Distress dispatches with highest priority through LoRa channel
+                var loraSent = false
+                if (loraGatewayManager.isGatewayConnected.value) {
+                    loraSent = loraGatewayManager.sendPacket(packet, lat, lon)
+                }
 
                 val json = JSONObject().apply {
                     put("type", "PACKET")
@@ -1310,12 +1374,10 @@ class TacticalMeshTransport(
                     put("relayHops", 0)
                 }.toString() + "\n"
 
-                // 1. Stream to every live mesh link (TCP + Bluetooth) we hold at once — a
-                // relay node forwards the same way, see relayToMeshPeers().
+                // 2. Stream to every live mesh link (TCP + Bluetooth)
                 val delivered = relayToMeshPeers(json, excludeKey = null)
 
-                // 2. Redundant UDP blast — reaches every peer on the same Wi-Fi subnet in a
-                // single hop for free, independent of the per-peer TCP/Bluetooth links above.
+                // 3. Redundant UDP blast
                 try {
                     val bytes = json.toByteArray(Charsets.UTF_8)
                     val bAddr = InetAddress.getByName("255.255.255.255")
@@ -1328,7 +1390,12 @@ class TacticalMeshTransport(
                     // Ignore UDP broadcast errors
                 }
 
-                Log.d("TacticalMesh", "Sent packet ${packet.packetId} to $delivered direct mesh link(s) + UDP broadcast: ${packet.text}")
+                // 4. Store-and-Forward: If no direct mesh peer was reached and LoRa was not delivered, queue locally in Room DB
+                if (delivered == 0 && !loraSent && peerLinks.isEmpty() && !loraGatewayManager.isGatewayConnected.value) {
+                    enqueueStoreAndForward(packet, lat, lon)
+                }
+
+                Log.d("TacticalMesh", "Sent packet ${packet.packetId} (delivered to $delivered link(s), LoRa=$loraSent): ${packet.text}")
             } catch (e: Throwable) {
                 if (e !is CancellationException) {
                     Log.w("TacticalMesh", "Error sending packet ${packet.packetId}: ${e.message}")
@@ -1336,6 +1403,82 @@ class TacticalMeshTransport(
             }
         }
         return true
+    }
+
+    private fun enqueueStoreAndForward(packet: NetworkPacket, lat: Double = 0.0, lon: Double = 0.0) {
+        scope.launch(Dispatchers.IO + exceptionHandler) {
+            val entity = PendingTransmissionEntity(
+                packetId = packet.packetId,
+                senderCallsign = packet.senderCallsign,
+                text = packet.text,
+                languageCode = packet.languageCode,
+                timestamp = packet.timestamp,
+                isAlert = packet.isAlert,
+                alertPriority = packet.alertPriority.name,
+                lat = lat,
+                lon = lon,
+                status = "QUEUED"
+            )
+            pendingTransmissionDao.insert(entity)
+            Log.i("TacticalMesh", "[STORE-AND-FORWARD] No active links. Queued packet ${packet.packetId} (Priority=${packet.alertPriority}) in Room DB.")
+        }
+    }
+
+    fun flushPendingQueue() {
+        scope.launch(Dispatchers.IO + exceptionHandler) {
+            val pendingList = pendingTransmissionDao.getPendingQueueList()
+            if (pendingList.isEmpty()) return@launch
+
+            val isMeshConnected = peerLinks.isNotEmpty() || _connectionStatus.value == ConnectionStatus.CONNECTED
+            val isLoraConnected = loraGatewayManager.isGatewayConnected.value
+
+            if (!isMeshConnected && !isLoraConnected) {
+                return@launch
+            }
+
+            Log.i("TacticalMesh", "[STORE-AND-FORWARD] Auto-dispatching ${pendingList.size} queued transmission(s)...")
+            for (item in pendingList) {
+                val packet = NetworkPacket(
+                    packetId = item.packetId,
+                    senderId = myNodeId,
+                    senderCallsign = item.senderCallsign,
+                    text = item.text,
+                    languageCode = item.languageCode,
+                    isAlert = item.isAlert,
+                    alertPriority = try { AlertPriority.valueOf(item.alertPriority) } catch (e: Exception) { AlertPriority.ROUTINE },
+                    timestamp = item.timestamp
+                )
+
+                var sent = false
+                if (isLoraConnected) {
+                    sent = loraGatewayManager.sendPacket(packet, item.lat, item.lon) || sent
+                }
+                if (isMeshConnected) {
+                    val json = JSONObject().apply {
+                        put("type", "PACKET")
+                        put("packetId", packet.packetId)
+                        put("senderId", myNodeId)
+                        put("senderCallsign", packet.senderCallsign)
+                        put("text", packet.text)
+                        put("languageCode", packet.languageCode)
+                        put("isAlert", packet.isAlert)
+                        put("alertPriority", packet.alertPriority.name)
+                        put("timestamp", packet.timestamp)
+                        put("channelFreq", packet.channelFreq)
+                        put("ttl", packet.ttl)
+                        put("relayHops", 0)
+                    }.toString() + "\n"
+                    val delivered = relayToMeshPeers(json, excludeKey = null)
+                    sent = delivered > 0 || sent
+                }
+
+                if (sent) {
+                    pendingTransmissionDao.deleteById(item.id)
+                    Log.i("TacticalMesh", "[STORE-AND-FORWARD] Successfully dispatched queued packet ${item.packetId} (Priority=${item.alertPriority})")
+                }
+                delay(120)
+            }
+        }
     }
 
     /**
@@ -1448,10 +1591,7 @@ class TacticalMeshTransport(
                     } else {
                         DeviceTelemetryProvider.getCleanDeviceModel()
                     }
-                    // Keyed by sourceAddress (matching the peerLinks entry this socket was
-                    // registered under) so refreshConnectedPeersState() can find it — the
-                    // nodeId is only known once this handshake arrives, the link itself was
-                    // already opened (and keyed by address) at accept/connect time.
+                    val battery = obj.optInt("batteryLevel", obj.optInt("battery", 100))
                     val peer = PeerDevice(
                         id = sourceAddress,
                         name = deviceName,
@@ -1459,12 +1599,63 @@ class TacticalMeshTransport(
                         protocol = _activeProtocol.value,
                         port = tcpPort,
                         isConnected = true,
-                        signalStrengthDbm = -52
+                        signalStrengthDbm = -52,
+                        batteryPercent = battery
+                    )
+                    peerMap[sourceAddress] = peer
+                    peerLastSeen[sourceAddress] = System.currentTimeMillis()
+
+                    // Auto-reply with 2-way Handshake ACK containing nodeId, callsign, and batteryLevel
+                    val ack = JSONObject().apply {
+                        put("type", "HANDSHAKE_ACK")
+                        put("nodeId", myNodeId)
+                        put("hardwareId", DeviceTelemetryProvider.getHardwareId(context))
+                        put("deviceName", myCallsign)
+                        put("callsign", myCallsign)
+                        put("batteryLevel", telemetry.value.batteryPercent)
+                        put("connectionType", obj.optString("connectionType", "DIRECT"))
+                    }
+                    peerLinks[sourceAddress]?.let { link ->
+                        try {
+                            link.writer.write(ack.toString() + "\n")
+                            link.writer.flush()
+                            Log.i("TacticalMesh", "Sent HANDSHAKE_ACK reply to $sourceAddress ($deviceName)")
+                        } catch (e: IOException) {
+                            Log.w("TacticalMesh", "Failed to write HANDSHAKE_ACK to $sourceAddress: ${e.message}")
+                        }
+                    }
+
+                    refreshConnectedPeersState()
+                    _connectionStatus.value = ConnectionStatus.CONNECTED
+                    telemetryProvider.updateConnectedPeerInfo(deviceName, -52, 10)
+                }
+
+                "HANDSHAKE_ACK" -> {
+                    val peerNodeId = obj.optString("nodeId", sourceAddress)
+                    if (peerNodeId == myNodeId) return
+                    val rawDeviceName = obj.optString("deviceName", obj.optString("callsign", ""))
+                    val deviceName = if (rawDeviceName.isNotBlank() && !rawDeviceName.startsWith("REMOTE-", ignoreCase = true) && !rawDeviceName.startsWith("NODE-", ignoreCase = true) && !rawDeviceName.startsWith("ISRO-", ignoreCase = true)) {
+                        DeviceTelemetryProvider.cleanDeviceName(rawDeviceName)
+                    } else {
+                        DeviceTelemetryProvider.getCleanDeviceModel()
+                    }
+                    val battery = obj.optInt("batteryLevel", obj.optInt("battery", 100))
+                    val peer = PeerDevice(
+                        id = sourceAddress,
+                        name = deviceName,
+                        address = sourceAddress,
+                        protocol = _activeProtocol.value,
+                        port = tcpPort,
+                        isConnected = true,
+                        signalStrengthDbm = -52,
+                        batteryPercent = battery
                     )
                     peerMap[sourceAddress] = peer
                     peerLastSeen[sourceAddress] = System.currentTimeMillis()
                     refreshConnectedPeersState()
+                    _connectionStatus.value = ConnectionStatus.CONNECTED
                     telemetryProvider.updateConnectedPeerInfo(deviceName, -52, 10)
+                    Log.i("TacticalMesh", "Processed HANDSHAKE_ACK from $sourceAddress ($deviceName, battery=$battery%) -> CONNECTED")
                 }
 
                 "PACKET" -> {

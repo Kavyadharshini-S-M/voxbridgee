@@ -48,9 +48,9 @@ enum class MissionDestination(
     val icon: ImageVector
 ) {
     CONTROL("control", "Walkie", Icons.Default.Mic),
-    COMM_LINK("comm_link", "Nearby", Icons.Default.CellTower),
-    VOICE_LOG("voice_log", "Messages", Icons.Default.ChatBubbleOutline),
     DISTRESS("distress", "SOS", Icons.Default.WarningAmber),
+    COMM_LINK("comm_link", "Nearby", Icons.Default.CellTower),
+    VOICE_LOG("voice_log", "Chats", Icons.Default.ChatBubbleOutline),
     SETTINGS("settings", "Settings", Icons.Default.Settings)
 }
 

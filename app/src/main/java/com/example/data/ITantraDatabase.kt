@@ -5,10 +5,18 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [VoiceMessageEntity::class], version = 1, exportSchema = false)
+@Database(
+    entities = [
+        VoiceMessageEntity::class,
+        PendingTransmissionEntity::class
+    ],
+    version = 2,
+    exportSchema = false
+)
 abstract class ITantraDatabase : RoomDatabase() {
 
     abstract fun voiceMessageDao(): VoiceMessageDao
+    abstract fun pendingTransmissionDao(): PendingTransmissionDao
 
     companion object {
         @Volatile
@@ -20,7 +28,7 @@ abstract class ITantraDatabase : RoomDatabase() {
                     context.applicationContext,
                     ITantraDatabase::class.java,
                     "itantra_mission_logs.db"
-                ).fallbackToDestructiveMigration().build()
+                ).fallbackToDestructiveMigration(true).build()
                 INSTANCE = instance
                 instance
             }

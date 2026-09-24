@@ -19,6 +19,7 @@ import com.example.model.VadStatus
 import com.example.stt.IndicSttEngine
 import com.example.stt.SttEngine
 import com.example.stt.SttModelInfo
+import com.example.transport.LoraGatewayManager
 import com.example.transport.MeshService
 import com.example.transport.NetworkPacket
 import com.example.transport.TacticalMeshTransport
@@ -82,6 +83,20 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
     // Room Persistence
     private val database = ITantraDatabase.getInstance(context)
     val repository = VoiceMessageRepository(database.voiceMessageDao())
+
+    // LoRa Gateway BLE Bridge
+    val loraGatewayManager: LoraGatewayManager? get() = (transportLayer as? TacticalMeshTransport)?.loraGatewayManager
+    val isLoraGatewayConnected: StateFlow<Boolean> = loraGatewayManager?.isGatewayConnected ?: MutableStateFlow(false).asStateFlow()
+    val loraGatewayName: StateFlow<String?> = loraGatewayManager?.gatewayDeviceName ?: MutableStateFlow(null).asStateFlow()
+    val loraGatewayRssi: StateFlow<Int> = loraGatewayManager?.gatewayRssi ?: MutableStateFlow(-100).asStateFlow()
+
+    // Store-and-Forward pending transmissions queue count
+    val pendingTransmissionCount: StateFlow<Int> = database.pendingTransmissionDao().getPendingCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    // GPS Location Service for offline emergency dispatch
+    val gpsLocationProvider = com.example.location.GpsLocationProvider(context)
+    val gpsCoordinates: StateFlow<String?> = gpsLocationProvider.lastLocationString
 
     val messageLogs: StateFlow<List<VoiceMessageEntity>> = repository.allMessages
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -385,22 +400,46 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    private val processedMessageIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun disconnectPeer(peerKey: String? = null) {
+        if (peerKey != null) {
+            transportLayer.disconnectPeer(peerKey)
+        } else {
+            transportLayer.disconnect()
+        }
+    }
+
     private fun handleIncomingPacket(packet: NetworkPacket) {
         viewModelScope.launch {
+            // Deduplication Guard: Drop duplicate packet arrivals across multi-hop and multi-transceiver arrivals
+            if (!processedMessageIds.add(packet.packetId)) {
+                return@launch
+            }
+
             val incomingLang = SupportedLanguage.fromCode(packet.languageCode)
             val receiverSelectedLang = _uiState.value.selectedLanguage
+
+            // Strip raw GPS coordinates so they are NEVER spoken aloud over TTS
+            val cleanIncomingText = com.example.audio.EmergencySosManager.stripGpsCoordinates(packet.text).ifBlank {
+                if (packet.isAlert) {
+                    com.example.audio.EmergencySosManager.getLocalizedAlertSpeech(incomingLang)
+                } else {
+                    packet.text
+                }
+            }
 
             // Translate into receiver device's active selected language using AI4Bharat IndicTrans2
             val translation = if (incomingLang == receiverSelectedLang) {
                 com.example.translation.IndicTrans2Translator.TranslationResult(
-                    translatedText = packet.text,
+                    translatedText = cleanIncomingText,
                     sourceLanguage = incomingLang,
                     targetLanguage = receiverSelectedLang,
                     isNeuralTranslation = false
                 )
             } else {
                 neuralTranslator.translate(
-                    text = packet.text,
+                    text = cleanIncomingText,
                     source = incomingLang,
                     target = receiverSelectedLang
                 )
@@ -505,6 +544,7 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * Directly bypasses STT and broadcasts hardcoded quick-action tactical commands over the mesh network.
+     * Auto-attaches GPS coordinates for emergency alert dispatches.
      */
     fun sendTacticalQuickAction(
         actionTitle: String,
@@ -512,12 +552,24 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
         priority: AlertPriority = AlertPriority.ROUTINE
     ) {
         val lang = _uiState.value.selectedLanguage
-        transmitUtterance(
-            text = actionTitle,
-            language = lang,
-            isAlert = isAlert,
-            priority = priority
-        )
+        viewModelScope.launch {
+            val gpsLocation = if (isAlert || priority == AlertPriority.CRITICAL_DISTRESS || priority == AlertPriority.URGENT) {
+                gpsLocationProvider.getCurrentLocationString()
+            } else {
+                null
+            }
+            val textToSend = if (!gpsLocation.isNullOrBlank() && !actionTitle.contains("GPS:")) {
+                "$actionTitle [GPS: $gpsLocation]"
+            } else {
+                actionTitle
+            }
+            transmitUtterance(
+                text = textToSend,
+                language = lang,
+                isAlert = isAlert,
+                priority = priority
+            )
+        }
     }
 
     /**
@@ -573,15 +625,38 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
         }
         val alertText = customMessage?.ifBlank { null } ?: defaultPhrase
 
-        transmitUtterance(
-            text = alertText,
-            language = lang,
-            isAlert = priority != AlertPriority.ROUTINE,
-            priority = priority
-        )
+        viewModelScope.launch {
+            val gpsLocation = gpsLocationProvider.getCurrentLocationString()
+            val alertTextWithGps = if (!gpsLocation.isNullOrBlank() && !alertText.contains("GPS:")) {
+                "$alertText [GPS: $gpsLocation]"
+            } else {
+                alertText
+            }
+
+            transmitUtterance(
+                text = alertTextWithGps,
+                language = lang,
+                isAlert = priority != AlertPriority.ROUTINE,
+                priority = priority
+            )
+        }
 
         // Haptic feedback & local notification
         alertAudioManager.triggerSosHaptics()
+    }
+
+    /**
+     * Triggers BLE scan for nearby ESP32 LoRa Gateway nodes.
+     */
+    fun startLoraGatewayScan() {
+        loraGatewayManager?.startScan()
+    }
+
+    /**
+     * Sends an instantaneous high-priority hardware SOS pulse directly over the LoRa channel.
+     */
+    fun triggerLoraFastSos() {
+        loraGatewayManager?.sendFastSosByte()
     }
 
     // ==========================================
@@ -642,7 +717,7 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
     fun playVoiceMessage(message: VoiceMessageEntity) {
         viewModelScope.launch {
             val currentLang = _uiState.value.selectedLanguage
-            val cleanText = message.text.substringBefore(" [")
+            val cleanText = com.example.audio.EmergencySosManager.stripGpsCoordinates(message.text.substringBefore(" ["))
             val messageLang = BundledOfflineTranslator.detectLanguage(cleanText)
                 ?: SupportedLanguage.fromCode(message.languageCode)
             val translation = BundledOfflineTranslator.translate(
