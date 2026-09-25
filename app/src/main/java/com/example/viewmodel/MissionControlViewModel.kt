@@ -51,10 +51,14 @@ data class MissionUiState(
     val showArmDistressDialog: Boolean = false,
     val directIpInput: String = "",
     val themeMode: String = "system", // "system", "light", "dark"
-    val customDeviceName: String = "",
     val isFieldModeEnabled: Boolean = false,
     val hardwareKeyRemap: String = "volume_down", // "none", "volume_down"
-    val isAudioChirpEnabled: Boolean = true
+    val isAudioChirpEnabled: Boolean = true,
+    val userAvatar: String = "🛡️",
+    val isShakeToSosEnabled: Boolean = true,
+    val fontSize: String = "Normal",
+    val fontScale: Float = 1.0f,
+    val customDeviceName: String = ""
 )
 
 class MissionControlViewModel(application: Application) : AndroidViewModel(application) {
@@ -79,6 +83,14 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
     // Transport is now managed by MeshService to survive in the background
     val transportLayer: TransportLayer = MeshService.transportInstance 
         ?: TacticalMeshTransport(context, viewModelScope) // Fallback for safety
+
+    // Accelerometer-based Shake-to-SOS Detector
+    val shakeDetector = com.example.audio.ShakeToSosDetector(context) {
+        broadcastDistressAlert(
+            customMessage = null,
+            priority = AlertPriority.CRITICAL_DISTRESS
+        )
+    }
 
     // Room Persistence
     private val database = ITantraDatabase.getInstance(context)
@@ -222,12 +234,26 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
 
         // Load custom preferences
         val customName = preferenceManager.getCustomDeviceName() ?: ""
+        val savedAvatar = preferenceManager.getUserAvatar()
+        val savedShake = preferenceManager.isShakeToSosEnabled()
+        val savedFontSize = preferenceManager.getFontSize()
+        val savedFontScale = preferenceManager.getFontScale()
+
         _uiState.value = _uiState.value.copy(
             customDeviceName = customName,
+            userAvatar = savedAvatar,
+            isShakeToSosEnabled = savedShake,
+            fontSize = savedFontSize,
+            fontScale = savedFontScale,
             isFieldModeEnabled = preferenceManager.isFieldModeEnabled(),
             hardwareKeyRemap = preferenceManager.getHardwareKeyRemap(),
             isAudioChirpEnabled = preferenceManager.isAudioChirpEnabled()
         )
+
+        if (savedShake) {
+            shakeDetector.start()
+        }
+
         if (customName.isNotBlank()) {
             (transportLayer as? TacticalMeshTransport)?.let {
                 it.telemetry.value // Ensure telemetry is updated
@@ -345,6 +371,42 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
         preferenceManager.setCustomDeviceName(name)
         _uiState.value = _uiState.value.copy(customDeviceName = name)
         updateTransportCallsign(name)
+    }
+
+    fun setUserAvatar(avatar: String) {
+        preferenceManager.setUserAvatar(avatar)
+        _uiState.value = _uiState.value.copy(userAvatar = avatar)
+    }
+
+    fun setShakeToSosEnabled(enabled: Boolean) {
+        preferenceManager.setShakeToSosEnabled(enabled)
+        _uiState.value = _uiState.value.copy(isShakeToSosEnabled = enabled)
+        if (enabled) {
+            shakeDetector.start()
+        } else {
+            shakeDetector.stop()
+        }
+    }
+
+    fun setFontScale(scale: Float) {
+        preferenceManager.setFontScale(scale)
+        val label = when {
+            scale < 0.92f -> "Small"
+            scale <= 1.05f -> "Normal"
+            scale <= 1.22f -> "Large"
+            else -> "Extra Large"
+        }
+        _uiState.value = _uiState.value.copy(fontScale = scale, fontSize = label)
+    }
+
+    fun setFontSize(size: String) {
+        val scale = when (size) {
+            "Small" -> 0.85f
+            "Large" -> 1.15f
+            "Extra Large" -> 1.30f
+            else -> 1.0f
+        }
+        setFontScale(scale)
     }
 
     private fun updateTransportCallsign(name: String) {
@@ -496,31 +558,53 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
                 return@launch
             }
 
-            // CRITICAL: Mute STT recording while TTS plays over speaker to prevent acoustic feedback loop
+            // CRITICAL: Mute STT recording while audio plays over speaker to prevent acoustic feedback loop
             sttEngine.stopListening()
 
-            // Play voice note / alert speech through phone speaker in receiver's SELECTED language!
-            ttsEngine.speak(
-                text = speechText,
-                language = speechLang,
-                isAlert = packet.isAlert,
-                onDone = {
-                    viewModelScope.launch {
-                        repository.markAsPlayed(rowId)
-                        delay(600) // Allow speaker reverb to dissipate
-                        _uiState.value = _uiState.value.copy(
-                            channelState = if (!_uiState.value.isPttActive && _uiState.value.deviceRole != "TTS_ONLY") RadioChannelState.LISTENING else RadioChannelState.STANDBY,
-                            activeIncomingCaption = null,
-                            activeIncomingIsAlert = false
-                        )
-                        if (!_uiState.value.isPttActive && _uiState.value.deviceRole != "TTS_ONLY") {
-                            sttEngine.startListening(_uiState.value.selectedLanguage)
+            if (packet.isAlert) {
+                // USER REQUIREMENT:
+                // For SOS / alerts, do NOT speak the message aloud with TTS, ONLY play the emergency audio effect!
+                // Red / Critical Distress -> R.raw.sos_danger_red
+                // Other SOS / Urgent alerts -> R.raw.sos_alarm_alert
+                alertAudioManager.lockAudioFocusForAlert()
+                alertAudioManager.playEmergencySirenTone(priority = packet.alertPriority)
+                alertAudioManager.releaseAlertAudioFocus()
+
+                repository.markAsPlayed(rowId)
+                delay(400) // Allow speaker reverb to dissipate
+                _uiState.value = _uiState.value.copy(
+                    channelState = if (!_uiState.value.isPttActive && _uiState.value.deviceRole != "TTS_ONLY") RadioChannelState.LISTENING else RadioChannelState.STANDBY,
+                    activeIncomingCaption = null,
+                    activeIncomingIsAlert = false
+                )
+                if (!_uiState.value.isPttActive && _uiState.value.deviceRole != "TTS_ONLY") {
+                    sttEngine.startListening(_uiState.value.selectedLanguage)
+                }
+            } else {
+                // Play regular voice note through phone speaker in receiver's SELECTED language!
+                ttsEngine.speak(
+                    text = speechText,
+                    language = speechLang,
+                    isAlert = false,
+                    onDone = {
+                        viewModelScope.launch {
+                            repository.markAsPlayed(rowId)
+                            delay(600) // Allow speaker reverb to dissipate
+                            _uiState.value = _uiState.value.copy(
+                                channelState = if (!_uiState.value.isPttActive && _uiState.value.deviceRole != "TTS_ONLY") RadioChannelState.LISTENING else RadioChannelState.STANDBY,
+                                activeIncomingCaption = null,
+                                activeIncomingIsAlert = false
+                            )
+                            if (!_uiState.value.isPttActive && _uiState.value.deviceRole != "TTS_ONLY") {
+                                sttEngine.startListening(_uiState.value.selectedLanguage)
+                            }
                         }
                     }
-                }
-            )
+                )
+            }
         }
     }
+
 
     /**
      * Replays the last synthesized voice packet over the phone speaker.
@@ -544,7 +628,7 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * Directly bypasses STT and broadcasts hardcoded quick-action tactical commands over the mesh network.
-     * Auto-attaches GPS coordinates for emergency alert dispatches.
+     * Auto-attaches GPS coordinates for action dispatches.
      */
     fun sendTacticalQuickAction(
         actionTitle: String,
@@ -553,11 +637,7 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
     ) {
         val lang = _uiState.value.selectedLanguage
         viewModelScope.launch {
-            val gpsLocation = if (isAlert || priority == AlertPriority.CRITICAL_DISTRESS || priority == AlertPriority.URGENT) {
-                gpsLocationProvider.getCurrentLocationString()
-            } else {
-                null
-            }
+            val gpsLocation = gpsLocationProvider.getCurrentLocationString() ?: gpsLocationProvider.lastLocationString.value
             val textToSend = if (!gpsLocation.isNullOrBlank() && !actionTitle.contains("GPS:")) {
                 "$actionTitle [GPS: $gpsLocation]"
             } else {
@@ -571,6 +651,16 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
             )
         }
     }
+
+    /**
+     * Plays a test siren sound using the emergency audio manager.
+     */
+    fun testSirenAudio(priority: AlertPriority = AlertPriority.CRITICAL_DISTRESS) {
+        viewModelScope.launch {
+            alertAudioManager.playEmergencySirenTone(priority = priority, durationMs = 2000)
+        }
+    }
+
 
     /**
      * Transmits a manual typed text message over the tactical mesh network in the user's preferred language.
@@ -809,6 +899,7 @@ class MissionControlViewModel(application: Application) : AndroidViewModel(appli
 
     override fun onCleared() {
         super.onCleared()
+        shakeDetector.stop()
         sttEngine.stopListening()
         ttsEngine.shutdown()
         transportLayer.disconnect()

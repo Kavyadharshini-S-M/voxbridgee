@@ -99,6 +99,7 @@ val MinimalColorsInstance: MinimalColors
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     isFieldMode: Boolean = false,
+    fontScale: Float = 1.0f,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
@@ -147,7 +148,17 @@ fun MyApplicationTheme(
         )
     }
 
-    CompositionLocalProvider(LocalMinimalColors provides minimalTokens) {
+    val currentDensity = androidx.compose.ui.platform.LocalDensity.current
+    val effectiveFontScale = if (fontScale > 0.1f) fontScale else 1.0f
+    val scaledDensity = androidx.compose.ui.unit.Density(
+        density = currentDensity.density,
+        fontScale = currentDensity.fontScale * effectiveFontScale
+    )
+
+    CompositionLocalProvider(
+        LocalMinimalColors provides minimalTokens,
+        androidx.compose.ui.platform.LocalDensity provides scaledDensity
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = Typography,

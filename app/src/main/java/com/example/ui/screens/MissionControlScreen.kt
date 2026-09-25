@@ -68,6 +68,7 @@ import com.example.viewmodel.MissionControlViewModel
  */
 data class VisualActionCard(
     val title: String,
+    val subTitle: String,
     val isAlert: Boolean,
     val priority: AlertPriority,
     val icon: ImageVector,
@@ -94,12 +95,19 @@ fun MissionControlScreen(
     val vadStatus by viewModel.vadStatus.collectAsState()
     val speechProbability by viewModel.speechProbability.collectAsState()
     val connectedPeer by viewModel.connectedPeer.collectAsState()
+    val connectedPeers by viewModel.connectedPeers.collectAsState()
+    val discoveredPeers by viewModel.discoveredPeers.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
     val isTtsSpeaking by viewModel.isTtsSpeaking.collectAsState()
 
     var showLanguageSheet by remember { mutableStateOf(false) }
     var textMessageInput by remember { mutableStateOf("") }
     val scrollState = rememberScrollState()
+
+    val allConnected = remember(connectedPeer, connectedPeers) {
+        if (connectedPeers.isNotEmpty()) connectedPeers else listOfNotNull(connectedPeer)
+    }
+    val isConnected = connectionStatus == ConnectionStatus.CONNECTED && allConnected.isNotEmpty()
 
     BoxWithConstraints(
         modifier = modifier
@@ -128,12 +136,13 @@ fun MissionControlScreen(
             verticalArrangement = Arrangement.spacedBy(sectionSpacing)
         ) {
             // Section 1: Header (VOXBRIDGE · My Radio · Ready to Talk)
+            val myRadio = com.example.ui.localization.AppLocalization.getMyRadio(uiState.selectedLanguage)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
                         text = "VOXBRIDGE",
                         fontSize = 26.sp,
@@ -142,14 +151,19 @@ fun MissionControlScreen(
                         letterSpacing = 1.sp
                     )
                     Text(
-                        text = "My Radio",
+                        text = if (uiState.selectedLanguage == SupportedLanguage.ENGLISH) "My Radio" else "${myRadio.nativeText} (${myRadio.englishLabel})",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = colors.accent
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    val isConnected = connectionStatus == ConnectionStatus.CONNECTED && (connectedPeer != null || viewModel.connectedPeers.value.isNotEmpty())
-                    val peerDisplayName = connectedPeer?.name ?: viewModel.connectedPeers.value.firstOrNull()?.name
+
+                    val statusText = when {
+                        isConnected && allConnected.size == 1 -> "🟢 Connected to ${allConnected[0].name} (🔋${allConnected[0].batteryPercent}%)"
+                        isConnected && allConnected.size > 1 -> "🟢 ${allConnected.size} Connected (${allConnected.joinToString(", ") { "${it.name} 🔋${it.batteryPercent}%" }})"
+                        discoveredPeers.isNotEmpty() -> "🟡 ${discoveredPeers.size} available (Tap to connect)"
+                        else -> "🟡 Ready to connect (Tap to pair)"
+                    }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -168,6 +182,7 @@ fun MissionControlScreen(
                                     else Color(0xFFFDCB6E).copy(alpha = 0.6f),
                                     shape = RoundedCornerShape(8.dp)
                                 )
+                                .clickable { onNavigateToPairing() }
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Row(
@@ -181,10 +196,12 @@ fun MissionControlScreen(
                                         .background(if (isConnected) Color(0xFF00B894) else Color(0xFFE17055))
                                 )
                                 Text(
-                                    text = if (isConnected) "🟢 Connected to ${peerDisplayName ?: "Peer"}" else "🟡 Searching for Peers",
+                                    text = statusText,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = if (isConnected) Color(0xFF00B894) else colors.textPrimary
+                                    color = if (isConnected) Color(0xFF00B894) else colors.textPrimary,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                 )
                             }
                         }
@@ -248,6 +265,9 @@ fun MissionControlScreen(
                 Row(modifier = Modifier.fillMaxWidth()) {
                     val isPtt = uiState.isPttActive
 
+                    val pttLabel = com.example.ui.localization.AppLocalization.getPttWalkieTalkie(uiState.selectedLanguage)
+                    val phoneLabel = com.example.ui.localization.AppLocalization.getPhoneMode(uiState.selectedLanguage)
+
                     // Walkie Talkie Option
                     Box(
                         modifier = Modifier
@@ -269,10 +289,11 @@ fun MissionControlScreen(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Walkie Talkie",
-                                fontSize = 13.sp,
+                                text = if (uiState.selectedLanguage == SupportedLanguage.ENGLISH) "Walkie Talkie" else "${pttLabel.nativeText} (${pttLabel.englishLabel})",
+                                fontSize = 12.sp,
                                 fontWeight = if (isPtt) FontWeight.SemiBold else FontWeight.Normal,
-                                color = if (isPtt) colors.accent else colors.textSecondary
+                                color = if (isPtt) colors.accent else colors.textSecondary,
+                                maxLines = 1
                             )
                         }
                     }
@@ -298,10 +319,11 @@ fun MissionControlScreen(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Phone Mode",
-                                fontSize = 13.sp,
+                                text = if (uiState.selectedLanguage == SupportedLanguage.ENGLISH) "Phone Mode" else "${phoneLabel.nativeText} (${phoneLabel.englishLabel})",
+                                fontSize = 12.sp,
                                 fontWeight = if (!isPtt) FontWeight.SemiBold else FontWeight.Normal,
-                                color = if (!isPtt) colors.accent else colors.textSecondary
+                                color = if (!isPtt) colors.accent else colors.textSecondary,
+                                maxLines = 1
                             )
                         }
                     }
@@ -339,31 +361,41 @@ fun MissionControlScreen(
             )
 
             // Section 5: Visual Action Cards (4 High-Contrast Instant Dispatch Cards)
-            val visualActionCards = remember {
+            val currentLang = uiState.selectedLanguage
+            val doc = com.example.ui.localization.AppLocalization.getActionDoctor(currentLang)
+            val road = com.example.ui.localization.AppLocalization.getActionRoadBlocked(currentLang)
+            val water = com.example.ui.localization.AppLocalization.getActionNeedWater(currentLang)
+            val safe = com.example.ui.localization.AppLocalization.getActionSafe(currentLang)
+
+            val visualActionCards = remember(currentLang) {
                 listOf(
                     VisualActionCard(
-                        title = "Doctor / First Aid",
+                        title = doc.nativeText,
+                        subTitle = doc.englishLabel,
                         isAlert = true,
                         priority = AlertPriority.CRITICAL_DISTRESS,
                         icon = Icons.Default.MedicalServices,
                         accentColor = Color(0xFFE53935) // Red
                     ),
                     VisualActionCard(
-                        title = "Road Blocked",
+                        title = road.nativeText,
+                        subTitle = road.englishLabel,
                         isAlert = true,
                         priority = AlertPriority.URGENT,
                         icon = Icons.Default.Block,
                         accentColor = Color(0xFFFB8C00) // Amber
                     ),
                     VisualActionCard(
-                        title = "Need Water",
+                        title = water.nativeText,
+                        subTitle = water.englishLabel,
                         isAlert = false,
                         priority = AlertPriority.ROUTINE,
                         icon = Icons.Default.WaterDrop,
                         accentColor = Color(0xFF0288D1) // Blue
                     ),
                     VisualActionCard(
-                        title = "I am Safe",
+                        title = safe.nativeText,
+                        subTitle = safe.englishLabel,
                         isAlert = false,
                         priority = AlertPriority.ROUTINE,
                         icon = Icons.Default.Check,
@@ -422,7 +454,7 @@ fun MissionControlScreen(
                                             )
                                             .clickable {
                                                 viewModel.sendTacticalQuickAction(
-                                                    actionTitle = action.title,
+                                                    actionTitle = "${action.title} (${action.subTitle})",
                                                     isAlert = action.isAlert,
                                                     priority = action.priority
                                                 )
@@ -448,13 +480,23 @@ fun MissionControlScreen(
                                                     modifier = Modifier.size(24.dp)
                                                 )
                                             }
-                                            Text(
-                                                text = action.title,
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = colors.textPrimary,
-                                                maxLines = 1
-                                            )
+                                            Column {
+                                                Text(
+                                                    text = action.title,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = colors.textPrimary,
+                                                    maxLines = 1
+                                                )
+                                                if (currentLang != SupportedLanguage.ENGLISH) {
+                                                    Text(
+                                                        text = action.subTitle,
+                                                        fontSize = 11.sp,
+                                                        color = colors.textSecondary,
+                                                        maxLines = 1
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -560,7 +602,7 @@ fun MissionControlScreen(
                 showLanguageSheet = false
             },
             onDismiss = { showLanguageSheet = false },
-            onPreviewAudio = { lang -> viewModel.testTtsAudio(lang.sampleAlertPhrase) }
+            onPreviewAudio = { lang -> viewModel.testLanguageVoice(lang) }
         )
     }
 }

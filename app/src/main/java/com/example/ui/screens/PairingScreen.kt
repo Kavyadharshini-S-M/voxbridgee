@@ -203,13 +203,14 @@ fun PairingScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "IP: ${telemetry.localIpAddress}:8889",
+                            text = "IP: ${telemetry.localIpAddress.substringBefore(":")}",
                             fontSize = 13.sp,
                             color = colors.textSecondary
                         )
                         Text(
-                            text = "Battery: ${telemetry.batteryPercent}%",
+                            text = "🔋 ${telemetry.batteryPercent}%",
                             fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
                             color = colors.textSecondary
                         )
                     }
@@ -296,7 +297,8 @@ fun PairingScreen(
         }
 
         // Section 4: Active Connected Peer / Mesh Network
-        val hasActiveConnections = connectedPeer != null || connectedPeers.isNotEmpty() || connectionStatus == ConnectionStatus.CONNECTED
+        val activePeersList = if (connectedPeers.isNotEmpty()) connectedPeers else listOfNotNull(connectedPeer)
+        val hasActiveConnections = activePeersList.isNotEmpty() || connectionStatus == ConnectionStatus.CONNECTED
         if (hasActiveConnections) {
             item {
                 Box(
@@ -307,33 +309,25 @@ fun PairingScreen(
                         .border(1.dp, colors.accent, RoundedCornerShape(16.dp))
                         .padding(16.dp)
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        tint = colors.accent,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = connectedPeer?.name ?: "Connected Mesh Node",
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = colors.textPrimary
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(2.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = colors.accent,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "${connectedPeer?.protocol?.name ?: activeProtocol.name} · ${connectedPeer?.address ?: telemetry.localIpAddress} · Live Link",
-                                    fontSize = 13.sp,
-                                    color = colors.textSecondary
+                                    text = if (activePeersList.size > 1) "Connected Radios (${activePeersList.size})" else (activePeersList.firstOrNull()?.name ?: "Connected Friend"),
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = colors.textPrimary
                                 )
                             }
 
@@ -345,29 +339,52 @@ fun PairingScreen(
                                 ),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
-                                Text("Disconnect", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("Tap to Disconnect", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
 
-                        if (connectedPeers.size > 1) {
-                            HorizontalDivider(thickness = 1.dp, color = colors.outline)
-                            Text(
-                                text = "Mesh Relay: Bridging ${connectedPeers.size} active nodes",
-                                fontSize = 12.sp,
-                                color = colors.accent,
-                                fontWeight = FontWeight.Medium
-                            )
-                            connectedPeers.forEach { peer ->
+                        activePeersList.forEach { peer ->
+                            val distEst = com.example.location.GpsDistanceUtils.estimateRssiDistance(peer.signalStrengthDbm)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(colors.accentContainer.copy(alpha = 0.35f))
+                                    .padding(10.dp)
+                            ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(text = peer.name, fontSize = 13.sp, color = colors.textPrimary)
-                                    Text(
-                                        text = "${peer.protocol.name} · ${peer.signalStrengthDbm} dBm",
-                                        fontSize = 12.sp,
-                                        color = colors.textSecondary
-                                    )
+                                    Column {
+                                        Text(
+                                            text = peer.name,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = colors.textPrimary
+                                        )
+                                        Text(
+                                            text = "${peer.protocol.name} · $distEst away",
+                                            fontSize = 12.sp,
+                                            color = colors.textSecondary
+                                        )
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(colors.surface)
+                                            .border(1.dp, colors.outline, RoundedCornerShape(6.dp))
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "🔋 ${peer.batteryPercent}%",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (peer.batteryPercent < 20) colors.error else colors.accent
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -505,6 +522,7 @@ fun PairingScreen(
             }
         } else {
             items(discoveredPeers) { peer ->
+                val distEst = com.example.location.GpsDistanceUtils.estimateRssiDistance(peer.signalStrengthDbm)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -522,27 +540,30 @@ fun PairingScreen(
                             Text(
                                 text = peer.name,
                                 fontSize = 15.sp,
-                                fontWeight = FontWeight.Medium,
+                                fontWeight = FontWeight.Bold,
                                 color = colors.textPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "${peer.protocol.name} · Signal: ${peer.signalStrengthDbm} dBm",
+                                text = "${peer.protocol.name} · ~$distEst away",
                                 fontSize = 13.sp,
                                 color = colors.textSecondary
                             )
                         }
 
-                        OutlinedButton(
+                        Button(
                             onClick = { viewModel.connectToPeer(peer) },
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.accent,
+                                contentColor = Color.White
+                            )
                         ) {
-                            Text("Connect", fontSize = 13.sp, color = colors.accent)
+                            Text("Connect Now", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
             }
-        }
 
         // Section 7: Sound Wave Tap-to-Connect
         item {
@@ -756,13 +777,13 @@ fun PairingScreen(
                     ) {
                         Column {
                             Text(
-                                text = "Manual IP Connection",
+                                text = "Connect to Friend's IP",
                                 fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium,
+                                fontWeight = FontWeight.Bold,
                                 color = colors.textPrimary
                             )
                             Text(
-                                text = "Direct fallback for known network IP",
+                                text = "Enter friend's IP address directly",
                                 fontSize = 12.sp,
                                 color = colors.textSecondary
                             )
@@ -786,7 +807,7 @@ fun PairingScreen(
                             OutlinedTextField(
                                 value = manualIpInput,
                                 onValueChange = { manualIpInput = it },
-                                placeholder = { Text("192.168.1.100", color = colors.textSecondary) },
+                                placeholder = { Text("e.g. 192.168.49.1", color = colors.textSecondary) },
                                 singleLine = true,
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = colors.accent,
@@ -800,23 +821,27 @@ fun PairingScreen(
                                 modifier = Modifier.weight(1f)
                             )
 
-                            OutlinedButton(
+                            Button(
                                 onClick = {
                                     if (manualIpInput.isNotBlank()) {
                                         viewModel.connectDirectIp(manualIpInput.trim(), 8889)
                                     }
                                 },
                                 shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = colors.accent,
+                                    contentColor = Color.White
+                                ),
                                 modifier = Modifier.height(56.dp)
                             ) {
-                                Text("Connect", fontSize = 13.sp, color = colors.textPrimary)
+                                Text("Connect Now", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
                 }
             }
         }
-        }
+    }
     }
 
     if (showQrDialog) {
@@ -831,4 +856,5 @@ fun PairingScreen(
             onDismiss = { showQrDialog = false }
         )
     }
+}
 }

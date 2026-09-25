@@ -323,7 +323,7 @@ class IndicTtsEngine(
                 val tts = androidTts
                 if (tts != null) {
                     try {
-                        var textToSpeak = trimmed
+                        var textToSpeak = normalizePronunciation(trimmed, language)
                         
                         // Check if Android system TTS engine supports this language
                         val langAvailability = try {
@@ -334,16 +334,13 @@ class IndicTtsEngine(
 
                         if (language == SupportedLanguage.ENGLISH) {
                             tts.language = java.util.Locale.ENGLISH
-                            textToSpeak = trimmed
                         } else if (langAvailability >= android.speech.tts.TextToSpeech.LANG_AVAILABLE) {
                             // Native locale is supported by Android TTS engine - speak native script directly!
                             tts.language = language.locale
-                            textToSpeak = trimmed
                             Log.i(TAG, "Using native TTS voice for ${language.englishName} (${language.locale})")
                         } else if (language == SupportedLanguage.MARATHI && tts.isLanguageAvailable(java.util.Locale("hi", "IN")) >= android.speech.tts.TextToSpeech.LANG_AVAILABLE) {
                             // Marathi Devanagari script can be read naturally by Hindi TTS voice
                             tts.language = java.util.Locale("hi", "IN")
-                            textToSpeak = trimmed
                             Log.i(TAG, "Using Hindi Devanagari voice for Marathi")
                         } else {
                             // Regional Indic languages without downloaded engine voice pack:
@@ -527,6 +524,46 @@ class IndicTtsEngine(
         _currentlyPlayingText.value = null
         alertAudioManager.releaseAlertAudioFocus()
         alertAudioManager.stopHaptics()
+    }
+
+    private fun normalizePronunciation(text: String, lang: SupportedLanguage): String {
+        var result = text
+        if (lang != SupportedLanguage.ENGLISH) {
+            result = result.replace(Regex("""\b(?i)hi\b"""), when (lang) {
+                SupportedLanguage.HINDI, SupportedLanguage.MARATHI -> "हाय"
+                SupportedLanguage.TAMIL -> "ஹாய்"
+                SupportedLanguage.TELUGU -> "హాయ్"
+                SupportedLanguage.BENGALI -> "হাই"
+                SupportedLanguage.GUJARATI -> "હાય"
+                SupportedLanguage.KANNADA -> "ಹಾಯ್"
+                SupportedLanguage.MALAYALAM -> "ഹായ്"
+                SupportedLanguage.ODIA -> "ହାଏ"
+                else -> "hi"
+            })
+            result = result.replace(Regex("""\b(?i)bye\b"""), when (lang) {
+                SupportedLanguage.HINDI, SupportedLanguage.MARATHI -> "बाय"
+                SupportedLanguage.TAMIL -> "பாய்"
+                SupportedLanguage.TELUGU -> "బాయ్"
+                SupportedLanguage.BENGALI -> "বাই"
+                SupportedLanguage.GUJARATI -> "બાય"
+                SupportedLanguage.KANNADA -> "ಬಾಯ್"
+                SupportedLanguage.MALAYALAM -> "ബൈ"
+                SupportedLanguage.ODIA -> "ବାଏ"
+                else -> "bye"
+            })
+            result = result.replace(Regex("""\b(?i)sos\b"""), when (lang) {
+                SupportedLanguage.HINDI, SupportedLanguage.MARATHI -> "एस ओ एस"
+                SupportedLanguage.TAMIL -> "எஸ் ஓ எஸ்"
+                SupportedLanguage.TELUGU -> "ఎస్ ఓ ఎస్"
+                SupportedLanguage.BENGALI -> "এস ও এস"
+                SupportedLanguage.GUJARATI -> "એસ ઓ એસ"
+                SupportedLanguage.KANNADA -> "ಎಸ್ ಓ ಎಸ್"
+                SupportedLanguage.MALAYALAM -> "എസ് ഒ എസ്"
+                SupportedLanguage.ODIA -> "ଏସ୍ ଓ ଏସ୍"
+                else -> "S O S"
+            })
+        }
+        return result
     }
 
     override fun shutdown() {

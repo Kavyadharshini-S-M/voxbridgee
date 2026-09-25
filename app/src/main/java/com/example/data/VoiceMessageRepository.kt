@@ -20,6 +20,11 @@ class VoiceMessageRepository(private val dao: VoiceMessageDao) {
     }
 
     suspend fun clearMissionLogs() {
-        dao.clearAll()
+        dao.purgeOlderThan(Long.MAX_VALUE)
+    }
+
+    suspend fun purgeExpired48hMessages() {
+        val cutoff = System.currentTimeMillis() - (48L * 60 * 60 * 1000L)
+        dao.purgeOlderThan(cutoff)
     }
 }

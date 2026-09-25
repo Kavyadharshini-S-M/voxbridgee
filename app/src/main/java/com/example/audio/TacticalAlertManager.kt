@@ -72,13 +72,17 @@ class TacticalAlertManager(private val context: Context) {
     }
 
     /**
-     * SOS distress alert with SOS haptic pattern and 3 rapid camera LED strobe flashes.
+     * SOS distress alert with SOS haptic pattern and >10 second camera LED strobe flashes.
      */
     fun triggerDistressAlert(scope: CoroutineScope) {
-        // 1. SOS Haptic Pattern
+        // 1. Sustained SOS Haptic Pattern (repeat for 10 seconds)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator?.vibrate(VibrationEffect.createWaveform(sosPattern, -1))
+                val longSosPattern = longArrayOf(
+                    0, 400, 150, 400, 150, 400, 300, 800, 200, 800, 200, 800, 300, 400, 150, 400, 150, 400, 600,
+                    400, 150, 400, 150, 400, 300, 800, 200, 800, 200, 800, 300, 400, 150, 400, 150, 400, 600
+                )
+                vibrator?.vibrate(VibrationEffect.createWaveform(longSosPattern, -1))
             } else {
                 @Suppress("DEPRECATION")
                 vibrator?.vibrate(sosPattern, -1)
@@ -87,14 +91,14 @@ class TacticalAlertManager(private val context: Context) {
             Log.w(TAG, "SOS vibration error: ${e.message}")
         }
 
-        // 2. Camera LED Flashlight Strobe (3 pulses)
-        triggerTorchStrobe(scope, count = 3)
+        // 2. Camera LED Flashlight Strobe (35 pulses = ~10.5 seconds of high-visibility strobe)
+        triggerTorchStrobe(scope, count = 35)
     }
 
     /**
-     * Pulses camera LED torch in rapid succession.
+     * Pulses camera LED torch in rapid succession for rescue visibility (>10s).
      */
-    fun triggerTorchStrobe(scope: CoroutineScope, count: Int = 3) {
+    fun triggerTorchStrobe(scope: CoroutineScope, count: Int = 35) {
         scope.launch(Dispatchers.Default) {
             try {
                 val cm = cameraManager ?: return@launch
@@ -114,9 +118,9 @@ class TacticalAlertManager(private val context: Context) {
                 for (i in 0 until count) {
                     try {
                         cm.setTorchMode(cameraId, true)
-                        delay(120)
+                        delay(150)
                         cm.setTorchMode(cameraId, false)
-                        delay(100)
+                        delay(150)
                     } catch (e: Throwable) {
                         Log.d(TAG, "Torch pulse $i notice: ${e.message}")
                     }

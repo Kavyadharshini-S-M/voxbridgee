@@ -62,6 +62,60 @@ class PreferenceManager(context: Context) {
         prefs.edit().putBoolean("field_mode_enabled", enabled).apply()
     }
 
+    fun getUserAvatar(): String {
+        return prefs.getString("user_avatar", "🛡️") ?: "🛡️"
+    }
+
+    fun setUserAvatar(avatar: String) {
+        prefs.edit().putString("user_avatar", avatar).apply()
+    }
+
+    fun isShakeToSosEnabled(): Boolean {
+        return prefs.getBoolean("shake_to_sos_enabled", true)
+    }
+
+    fun setShakeToSosEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("shake_to_sos_enabled", enabled).apply()
+    }
+
+    fun getFontScale(): Float {
+        val savedScale = prefs.getFloat("font_scale", -1f)
+        if (savedScale > 0f) return savedScale
+        return when (prefs.getString("font_size", "Normal")) {
+            "Small" -> 0.85f
+            "Large" -> 1.15f
+            "Extra Large" -> 1.30f
+            else -> 1.0f
+        }
+    }
+
+    fun setFontScale(scale: Float) {
+        val label = when {
+            scale < 0.92f -> "Small"
+            scale <= 1.05f -> "Normal"
+            scale <= 1.22f -> "Large"
+            else -> "Extra Large"
+        }
+        prefs.edit()
+            .putFloat("font_scale", scale)
+            .putString("font_size", label)
+            .apply()
+    }
+
+    fun getFontSize(): String {
+        return prefs.getString("font_size", "Normal") ?: "Normal"
+    }
+
+    fun setFontSize(size: String) {
+        val scale = when (size) {
+            "Small" -> 0.85f
+            "Large" -> 1.15f
+            "Extra Large" -> 1.30f
+            else -> 1.0f
+        }
+        setFontScale(scale)
+    }
+
     fun getInstallUuid(): String {
         var uuid = prefs.getString("install_uuid", null)
         if (uuid.isNullOrBlank()) {

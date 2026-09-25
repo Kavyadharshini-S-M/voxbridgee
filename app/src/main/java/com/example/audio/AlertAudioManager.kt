@@ -17,6 +17,7 @@ import kotlin.math.sin
 
 import android.media.MediaPlayer
 import com.example.R
+import com.example.model.AlertPriority
 
 /**
  * Manages audio focus, volume override, and priority emergency distress sirens.
@@ -116,10 +117,18 @@ class AlertAudioManager(private val context: Context) {
 
     /**
      * Plays the emergency SOS distress sound.
-     * Uses the custom audio resource (R.raw.so) with maximum volume override and haptics,
-     * while retaining automatic fallback to the synthesized siren tone (playSynthesizedSirenTone).
+     * Plays R.raw.sos_danger_red for critical red emergencies and R.raw.sos_alarm_alert for other SOS emergencies.
+     * Uses maximum volume override and haptics, with automatic fallback to synthesized siren.
      */
-    suspend fun playEmergencySirenTone(durationMs: Int = 1800) = withContext(Dispatchers.IO) {
+    suspend fun playEmergencySirenTone(
+        priority: AlertPriority = AlertPriority.CRITICAL_DISTRESS,
+        durationMs: Int = 1800
+    ) = withContext(Dispatchers.IO) {
+        val soundRes = if (priority == AlertPriority.CRITICAL_DISTRESS) {
+            R.raw.sos_danger_red
+        } else {
+            R.raw.sos_alarm_alert
+        }
         var playedCustom = false
         var mp: MediaPlayer? = null
         try {
@@ -128,7 +137,11 @@ class AlertAudioManager(private val context: Context) {
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build()
 
-            mp = MediaPlayer.create(context, R.raw.so, audioAttrs, audioManager.generateAudioSessionId())
+            mp = MediaPlayer.create(context, soundRes, audioAttrs, audioManager.generateAudioSessionId())
+            if (mp == null) {
+                // Fallback to secondary asset if primary not found
+                mp = MediaPlayer.create(context, R.raw.so, audioAttrs, audioManager.generateAudioSessionId())
+            }
             if (mp != null) {
                 mp.setVolume(1.0f, 1.0f)
                 val trackDuration = mp.duration
@@ -143,7 +156,7 @@ class AlertAudioManager(private val context: Context) {
                 kotlinx.coroutines.delay(playTimeMs)
             }
         } catch (e: Exception) {
-            Log.e("AlertAudioManager", "Failed to play custom R.raw.so alert sound, falling back to synthesized siren", e)
+            Log.e("AlertAudioManager", "Failed to play custom alert sound ($soundRes), falling back to synthesized siren", e)
         } finally {
             try {
                 if (mp != null) {
@@ -162,6 +175,7 @@ class AlertAudioManager(private val context: Context) {
             playSynthesizedSirenTone(durationMs)
         }
     }
+
 
     /**
      * Synthesizes an audible tactical siren pulse (two-tone warble 960Hz - 1440Hz)

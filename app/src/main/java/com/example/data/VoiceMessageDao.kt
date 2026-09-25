@@ -21,8 +21,8 @@ interface VoiceMessageDao {
     @Query("DELETE FROM voice_transcripts WHERE id = :id")
     suspend fun deleteById(id: Long)
 
-    @Query("DELETE FROM voice_transcripts")
-    suspend fun clearAll()
+    @Query("DELETE FROM voice_transcripts WHERE timestamp < :cutoffTimestamp")
+    suspend fun purgeOlderThan(cutoffTimestamp: Long): Int
 
     @Query("SELECT COUNT(*) FROM voice_transcripts WHERE isAlert = 1")
     fun getAlertCount(): Flow<Int>

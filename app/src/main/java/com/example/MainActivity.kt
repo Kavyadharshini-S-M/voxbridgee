@@ -82,7 +82,11 @@ class MainActivity : ComponentActivity() {
                 else -> isSystemDark
             }
 
-            MyApplicationTheme(darkTheme = isDark, isFieldMode = uiState.isFieldModeEnabled) {
+            MyApplicationTheme(
+                darkTheme = isDark,
+                isFieldMode = uiState.isFieldModeEnabled,
+                fontScale = uiState.fontScale
+            ) {
                 MainAppContent(viewModel = viewModel)
             }
         }
@@ -199,7 +203,8 @@ fun MainAppContent(viewModel: MissionControlViewModel) {
             MissionBottomNav(
                 currentDestination = currentDestination,
                 onDestinationSelected = { currentDestination = it },
-                alertCount = alertCount
+                alertCount = alertCount,
+                selectedLanguage = uiState.selectedLanguage
             )
         },
         containerColor = colors.background

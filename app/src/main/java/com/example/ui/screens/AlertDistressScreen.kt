@@ -18,25 +18,27 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Domain
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.Tsunami
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WarningAmber
-import androidx.compose.material.icons.filled.WaterDrop
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -55,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import com.example.model.AlertPriority
 import com.example.model.SupportedLanguage
 import com.example.ui.components.HoldToSosButton
+import com.example.ui.localization.AppLocalization
 import com.example.ui.theme.MinimalColorsInstance
 import com.example.viewmodel.MissionControlViewModel
 
@@ -64,6 +67,7 @@ import com.example.viewmodel.MissionControlViewModel
 data class VisualHazardTile(
     val id: String,
     val title: String,
+    val subTitle: String,
     val iconEmoji: String,
     val iconVector: ImageVector,
     val accentColor: Color,
@@ -74,11 +78,12 @@ data class VisualHazardTile(
 /**
  * Inclusive Emergency SOS Screen.
  * Design principles:
- * - 3-second tactile hold ring button with haptic feedback (replaces slide-to-SOS).
+ * - Shake-to-SOS detection status & quick toggle banner.
+ * - Both 1-Tap Instant SOS Press & 3-Second Tactile Hold Ring buttons.
  * - 6 Visual Hazard Tiles: Medical ➕, Fire 🔥, Flood 🌊, Structural Collapse 🏗️, Cyclone 🌪️, Danger ⚠️.
- * - Auto-attaches live GPS coordinates (`FusedLocationProviderClient`).
- * - Touch targets >= 64dp for hazard tiles, >= 120dp for SOS hold ring.
- * - Jargon-free terminology ("Emergency Alert").
+ * - Bilingual regional language primary + English subtitle on all elements.
+ * - Auto-attaches live GPS coordinates.
+ * - Touch targets >= 64dp for hazard tiles, >= 120dp for SOS buttons.
  */
 @Composable
 fun AlertDistressScreen(
@@ -89,18 +94,29 @@ fun AlertDistressScreen(
     val uiState by viewModel.uiState.collectAsState()
     val gpsLocation by viewModel.gpsCoordinates.collectAsState()
     
-    var selectedPriority by remember { mutableStateOf(AlertPriority.CRITICAL_DISTRESS) }
     var customMessageText by remember { mutableStateOf("") }
     var selectedHazardId by remember { mutableStateOf("medical") }
     var alertSentConfirmation by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
 
+    val currentLang = uiState.selectedLanguage
+    val sosHeader = AppLocalization.getEmergencyAlert(currentLang)
+    val shakePrompt = AppLocalization.getShakeToSosPrompt(currentLang)
+
     // 6 Visual Hazard Tiles with comprehensive translations across Indic languages
-    val hazardTiles = remember {
+    val hazardTiles = remember(currentLang) {
+        val med = AppLocalization.getHazardMedical(currentLang)
+        val fire = AppLocalization.getHazardFire(currentLang)
+        val flood = AppLocalization.getHazardFlood(currentLang)
+        val collapse = AppLocalization.getHazardCollapse(currentLang)
+        val cyclone = AppLocalization.getHazardCyclone(currentLang)
+        val danger = AppLocalization.getHazardDanger(currentLang)
+
         listOf(
             VisualHazardTile(
                 id = "medical",
-                title = "Medical",
+                title = med.nativeText,
+                subTitle = med.englishLabel,
                 iconEmoji = "➕",
                 iconVector = Icons.Default.MedicalServices,
                 accentColor = Color(0xFFD32F2F), // Red
@@ -122,7 +138,8 @@ fun AlertDistressScreen(
             ),
             VisualHazardTile(
                 id = "fire",
-                title = "Fire",
+                title = fire.nativeText,
+                subTitle = fire.englishLabel,
                 iconEmoji = "🔥",
                 iconVector = Icons.Default.LocalFireDepartment,
                 accentColor = Color(0xFFE64A19), // Deep Orange
@@ -144,7 +161,8 @@ fun AlertDistressScreen(
             ),
             VisualHazardTile(
                 id = "flood",
-                title = "Flood",
+                title = flood.nativeText,
+                subTitle = flood.englishLabel,
                 iconEmoji = "🌊",
                 iconVector = Icons.Default.Tsunami,
                 accentColor = Color(0xFF1976D2), // Blue
@@ -166,7 +184,8 @@ fun AlertDistressScreen(
             ),
             VisualHazardTile(
                 id = "collapse",
-                title = "Collapse",
+                title = collapse.nativeText,
+                subTitle = collapse.englishLabel,
                 iconEmoji = "🏗️",
                 iconVector = Icons.Default.Domain,
                 accentColor = Color(0xFF795548), // Brown
@@ -188,7 +207,8 @@ fun AlertDistressScreen(
             ),
             VisualHazardTile(
                 id = "cyclone",
-                title = "Cyclone",
+                title = cyclone.nativeText,
+                subTitle = cyclone.englishLabel,
                 iconEmoji = "🌪️",
                 iconVector = Icons.Default.Warning,
                 accentColor = Color(0xFF00897B), // Teal
@@ -210,7 +230,8 @@ fun AlertDistressScreen(
             ),
             VisualHazardTile(
                 id = "danger",
-                title = "Danger",
+                title = danger.nativeText,
+                subTitle = danger.englishLabel,
                 iconEmoji = "⚠️",
                 iconVector = Icons.Default.WarningAmber,
                 accentColor = Color(0xFFF57C00), // Amber
@@ -225,7 +246,7 @@ fun AlertDistressScreen(
                         SupportedLanguage.MARATHI -> "गंभीर धोका: त्वरित मदतीची गरज आहे."
                         SupportedLanguage.GUJARATI -> "મોટો ખતરો: તાત્કાલિક મદદની જરૂર છે."
                         SupportedLanguage.KANNADA -> "ಅಪಾಯ: ತಕ್ಷಣ ಸಹಾಯ ಬೇಕಾಗಿದೆ."
-                        SupportedLanguage.MALAYALAM -> "അപകടാവസ്ഥ: ഉടൻ സഹായം ആവശ്യമാണ്."
+                        SupportedLanguage.MALAYALAM -> "അപകടാവസ്ഥ: ഉടൻ സഹায়ം ആവശ്യമാണ്."
                         SupportedLanguage.ODIA -> "ବିପଦ: ତୁରନ୍ତ ସାହାଯ୍ୟ ଆବଶ୍ୟକ।"
                     }
                 }
@@ -241,7 +262,7 @@ fun AlertDistressScreen(
         val isCompact = maxWidth < 380.dp || maxHeight < 680.dp
         val horizontalPadding = if (isCompact) 14.dp else 20.dp
         val verticalPadding = if (isCompact) 12.dp else 18.dp
-        val sectionSpacing = if (isCompact) 14.dp else 20.dp
+        val sectionSpacing = if (isCompact) 14.dp else 18.dp
 
         Column(
             modifier = Modifier.fillMaxSize()
@@ -256,22 +277,101 @@ fun AlertDistressScreen(
                 verticalArrangement = Arrangement.spacedBy(sectionSpacing)
             ) {
                 // Section 1: Screen Header
-                Column {
-                    Text(
-                        text = "Emergency Alert",
-                        fontSize = if (isCompact) 24.sp else 28.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = colors.textPrimary
-                    )
-                    Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = "Broadcast instant multi-sensory emergency alert over mesh",
-                        fontSize = if (isCompact) 12.sp else 13.sp,
-                        color = colors.textSecondary
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = if (currentLang == SupportedLanguage.ENGLISH) "Emergency Alert" else "${sosHeader.nativeText} (${sosHeader.englishLabel})",
+                            fontSize = if (isCompact) 22.sp else 26.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = colors.error
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Broadcast instant emergency alert with siren & strobe",
+                            fontSize = if (isCompact) 12.sp else 13.sp,
+                            color = colors.textSecondary
+                        )
+                    }
+
+                    // Quick Siren Test Button
+                    Button(
+                        onClick = { viewModel.testSirenAudio() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colors.error.copy(alpha = 0.15f),
+                            contentColor = colors.error
+                        ),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VolumeUp,
+                            contentDescription = "Test Siren",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Siren", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
 
-                // Section 2: Live Attached GPS Location Badge
+                // Section 2: Shake-to-SOS Status & Quick Toggle Card
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            if (uiState.isShakeToSosEnabled) Color(0xFFFB8C00).copy(alpha = 0.12f)
+                            else colors.surface
+                        )
+                        .border(
+                            width = 1.5.dp,
+                            color = if (uiState.isShakeToSosEnabled) Color(0xFFFB8C00) else colors.outline,
+                            shape = RoundedCornerShape(14.dp)
+                        )
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f).padding(end = 8.dp)
+                        ) {
+                            Text(text = "⚡", fontSize = 22.sp)
+                            Column {
+                                Text(
+                                    text = if (currentLang == SupportedLanguage.ENGLISH) "Shake-to-SOS Trigger" else "${shakePrompt.nativeText} (${shakePrompt.englishLabel})",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (uiState.isShakeToSosEnabled) Color(0xFFE65100) else colors.textPrimary
+                                )
+                                Text(
+                                    text = "Shake phone 3 times rapidly anytime to dispatch emergency beacon",
+                                    fontSize = 11.sp,
+                                    color = colors.textSecondary
+                                )
+                            }
+                        }
+
+                        Switch(
+                            checked = uiState.isShakeToSosEnabled,
+                            onCheckedChange = { viewModel.setShakeToSosEnabled(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = Color(0xFFFB8C00),
+                                uncheckedThumbColor = colors.textSecondary,
+                                uncheckedTrackColor = colors.outline
+                            )
+                        )
+                    }
+                }
+
+                // Section 3: Live Attached GPS Location Badge
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -319,7 +419,7 @@ fun AlertDistressScreen(
                     }
                 }
 
-                // Section 3: Confirmation Banner if alert dispatched
+                // Section 4: Confirmation Banner if alert dispatched
                 if (alertSentConfirmation) {
                     Box(
                         modifier = Modifier
@@ -355,7 +455,7 @@ fun AlertDistressScreen(
                     }
                 }
 
-                // Section 4: 6 Visual Hazard Tiles (Grid Layout, >=64dp touch target)
+                // Section 5: 6 Visual Hazard Tiles (Grid Layout, >=64dp touch target)
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -433,8 +533,9 @@ fun AlertDistressScreen(
                                                     color = if (isSelected) tile.accentColor else colors.textPrimary
                                                 )
                                                 Text(
-                                                    text = tile.iconEmoji,
-                                                    fontSize = 14.sp
+                                                    text = "${tile.iconEmoji} ${tile.subTitle}",
+                                                    fontSize = 12.sp,
+                                                    color = colors.textSecondary
                                                 )
                                             }
                                         }
@@ -445,7 +546,7 @@ fun AlertDistressScreen(
                     }
                 }
 
-                // Section 5: Broadcast Message Preview / Custom Input
+                // Section 6: Broadcast Message Preview / Custom Input
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "Message to Broadcast",
@@ -481,20 +582,20 @@ fun AlertDistressScreen(
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
-            // Section 6: Dedicated Bottom 3-Second Hold Ring SOS Button
+            // Section 7: Dedicated Bottom SOS Ring Control
+            val activeTile = hazardTiles.find { it.id == selectedHazardId }
+            val messageToBroadcast = customMessageText.ifBlank {
+                activeTile?.getMessage?.invoke(uiState.selectedLanguage) ?: "आपातकालीन चेतावनी: तत्काल सहायता आवश्यक है।"
+            }
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(colors.background)
-                    .padding(horizontal = horizontalPadding, vertical = 12.dp)
+                    .padding(horizontal = horizontalPadding, vertical = 14.dp)
                     .navigationBarsPadding(),
                 contentAlignment = Alignment.Center
             ) {
-                val activeTile = hazardTiles.find { it.id == selectedHazardId }
-                val messageToBroadcast = customMessageText.ifBlank {
-                    activeTile?.getMessage?.invoke(uiState.selectedLanguage) ?: "आपातकालीन चेतावनी: तत्काल सहायता आवश्यक है।"
-                }
-
                 HoldToSosButton(
                     onHoldComplete = {
                         viewModel.broadcastDistressAlert(

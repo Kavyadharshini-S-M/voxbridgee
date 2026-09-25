@@ -51,6 +51,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import java.lang.reflect.InvocationTargetException
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -58,7 +60,6 @@ import java.io.IOException
 import java.io.Closeable
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
-import java.lang.reflect.InvocationTargetException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -960,68 +961,56 @@ class TacticalMeshTransport(
         val adapter = bluetoothAdapter
         try {
             adapter?.cancelDiscovery()
-            delay(150) // Give hardware controller time to stop scanning before RFCOMM handshake
+            delay(100) // Brief yield for Bluetooth controller
         } catch (_: Throwable) {}
 
         var lastException: Exception = IOException("Failed to establish Bluetooth RFCOMM connection to ${device.address}")
 
-        // 1. Insecure RFCOMM socket via UUID (Standard Android)
-        for (attempt in 1..2) {
-            var socket: BluetoothSocket? = null
-            try {
-                Log.i("TacticalMesh", "[BLUETOOTH] Attempt $attempt (Insecure UUID): Connecting to ${device.address}")
-                socket = device.createInsecureRfcommSocketToServiceRecord(meshBluetoothUuid)
-                socket.connect()
-                Log.i("TacticalMesh", "[BLUETOOTH] RFCOMM connected successfully via Insecure UUID on attempt $attempt")
-                return socket
-            } catch (e: Exception) {
-                try { socket?.close() } catch (_: Throwable) {}
-                lastException = e
-                Log.w("TacticalMesh", "[BLUETOOTH] Attempt $attempt (Insecure UUID) failed: ${e.message}")
-                if (attempt < 2) delay(600)
-            }
-        }
-
-        // 2. Secure RFCOMM socket via UUID (Fallback for devices requiring encrypted/paired link)
-        var secureSocket: BluetoothSocket? = null
+        // 1. Insecure RFCOMM socket via standard UUID (with 3.5s timeout)
+        var socket: BluetoothSocket? = null
         try {
-            Log.i("TacticalMesh", "[BLUETOOTH] Fallback (Secure UUID): Connecting to ${device.address}")
-            secureSocket = device.createRfcommSocketToServiceRecord(meshBluetoothUuid)
-            secureSocket.connect()
-            Log.i("TacticalMesh", "[BLUETOOTH] Secure RFCOMM connected successfully via Secure UUID")
-            return secureSocket
+            Log.i("TacticalMesh", "[BLUETOOTH] Connecting via Insecure UUID to ${device.address}")
+            socket = device.createInsecureRfcommSocketToServiceRecord(meshBluetoothUuid)
+            withContext(Dispatchers.IO) {
+                withTimeout(3500L) {
+                    socket.connect()
+                }
+            }
+            Log.i("TacticalMesh", "[BLUETOOTH] RFCOMM connected successfully via Insecure UUID")
+            return socket
         } catch (e: Exception) {
-            try { secureSocket?.close() } catch (_: Throwable) {}
+            try { socket?.close() } catch (_: Throwable) {}
             lastException = e
-            Log.w("TacticalMesh", "[BLUETOOTH] Secure RFCOMM fallback failed: ${e.message}")
-            delay(600)
+            Log.w("TacticalMesh", "[BLUETOOTH] Insecure UUID attempt failed: ${e.message}")
         }
 
-        // 3. Reflection Fallback to RFCOMM Channels 1..3 (Fixes Samsung / LocalSocketImpl Broken pipe & read ret: -1)
-        for (channel in 1..3) {
-            var reflSocket: BluetoothSocket? = null
-            try {
-                Log.i("TacticalMesh", "[BLUETOOTH] Reflection fallback (Channel $channel): Connecting to ${device.address}")
-                val method = try {
-                    device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                } catch (_: Exception) {
-                    device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
-                }
-                reflSocket = method.invoke(device, channel) as BluetoothSocket
-                reflSocket.connect()
-                Log.i("TacticalMesh", "[BLUETOOTH] RFCOMM connected successfully via Reflection Channel $channel")
-                return reflSocket
-            } catch (e: Exception) {
-                try { reflSocket?.close() } catch (_: Throwable) {}
-                val realEx = (e as? InvocationTargetException)?.targetException ?: e
-                lastException = realEx as? Exception ?: Exception(realEx)
-                Log.w("TacticalMesh", "[BLUETOOTH] Reflection channel $channel fallback failed: ${realEx.message}")
-                if (channel < 3) delay(600)
+        // 2. Reflection Fallback to Insecure Channel 1 (with 3.5s timeout)
+        var reflSocket: BluetoothSocket? = null
+        try {
+            Log.i("TacticalMesh", "[BLUETOOTH] Fallback (Reflection Channel 1): Connecting to ${device.address}")
+            val method = try {
+                device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+            } catch (_: Exception) {
+                device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
             }
+            reflSocket = method.invoke(device, 1) as BluetoothSocket
+            withContext(Dispatchers.IO) {
+                withTimeout(3500L) {
+                    reflSocket.connect()
+                }
+            }
+            Log.i("TacticalMesh", "[BLUETOOTH] RFCOMM connected successfully via Reflection Channel 1")
+            return reflSocket
+        } catch (e: Exception) {
+            try { reflSocket?.close() } catch (_: Throwable) {}
+            val realEx = (e as? InvocationTargetException)?.targetException ?: e
+            lastException = realEx as? Exception ?: Exception(realEx)
+            Log.w("TacticalMesh", "[BLUETOOTH] Reflection fallback failed: ${realEx.message}")
         }
 
         throw lastException
     }
+
 
     private fun startKeepalivePing(key: String, writer: BufferedWriter) = scope.launch(Dispatchers.IO + exceptionHandler) {
         while (isActive && peerLinks.containsKey(key)) {
@@ -1489,16 +1478,9 @@ class TacticalMeshTransport(
      * block delivery to the others. Returns how many links the write actually succeeded on.
      */
     private fun relayToMeshPeers(rawJsonLine: String, excludeKey: String?): Int {
-        // [DEMO MODE HACK]
-        // Disable flood relay entirely for point-to-point demo mode.
-        // If excludeKey is NOT null, this is an incoming packet trying to relay. Drop it.
-        // If excludeKey IS null, this is our own local packet. Send it!
-        if (excludeKey != null) {
-            return 0
-        }
-        
         var delivered = 0
         val candidates = peerLinks.values
+            .filter { excludeKey == null || it.key != excludeKey }
             .sortedByDescending { peerMap[it.key]?.signalStrengthDbm ?: -100 }
 
         for (link in candidates) {

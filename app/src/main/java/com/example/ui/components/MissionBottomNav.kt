@@ -37,9 +37,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.navigationBarsPadding
+import com.example.model.SupportedLanguage
+import com.example.ui.localization.AppLocalization
 import com.example.ui.theme.MinimalColorsInstance
 
 enum class MissionDestination(
@@ -55,14 +58,14 @@ enum class MissionDestination(
 }
 
 /**
- * Minimal Navigation Bar (Linear / Things 3 design language).
- * Single accent color #6C5CE7, flat surface, 1dp subtle border, no heavy drop shadows.
+ * Minimal Navigation Bar with Bilingual (Regional + English) labels for emergency clarity.
  */
 @Composable
 fun MissionBottomNav(
     currentDestination: MissionDestination,
     onDestinationSelected: (MissionDestination) -> Unit,
     alertCount: Int,
+    selectedLanguage: SupportedLanguage = SupportedLanguage.HINDI,
     modifier: Modifier = Modifier
 ) {
     val colors = MinimalColorsInstance
@@ -78,14 +81,22 @@ fun MissionBottomNav(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(64.dp)
-                .padding(horizontal = 8.dp),
+                .height(68.dp)
+                .padding(horizontal = 4.dp),
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically
         ) {
             MissionDestination.entries.forEach { destination ->
                 val isSelected = destination == currentDestination
                 val isAlertTab = destination == MissionDestination.DISTRESS
+
+                val bilingual = when (destination) {
+                    MissionDestination.CONTROL -> AppLocalization.getTabWalkie(selectedLanguage)
+                    MissionDestination.DISTRESS -> AppLocalization.getTabSos(selectedLanguage)
+                    MissionDestination.COMM_LINK -> AppLocalization.getTabNearby(selectedLanguage)
+                    MissionDestination.VOICE_LOG -> AppLocalization.getTabChats(selectedLanguage)
+                    MissionDestination.SETTINGS -> AppLocalization.getTabSettings(selectedLanguage)
+                }
 
                 val targetColor = when {
                     isSelected -> colors.accent
@@ -105,12 +116,12 @@ fun MissionBottomNav(
                     verticalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .weight(1f)
-                        .height(56.dp)
+                        .height(60.dp)
                         .clickable(
                             interactionSource = interactionSource,
                             indication = null
                         ) { onDestinationSelected(destination) }
-                        .padding(vertical = 4.dp)
+                        .padding(vertical = 2.dp)
                         .testTag("nav_tab_${destination.route}")
                 ) {
                     if (isAlertTab && alertCount > 0) {
@@ -131,8 +142,8 @@ fun MissionBottomNav(
                             Icon(
                                 imageVector = destination.icon,
                                 contentDescription = destination.title,
-                                tint = iconColor,
-                                modifier = Modifier.size(22.dp)
+                                tint = if (isSelected) colors.error else colors.textSecondary,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     } else {
@@ -140,25 +151,44 @@ fun MissionBottomNav(
                             imageVector = destination.icon,
                             contentDescription = destination.title,
                             tint = iconColor,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
 
-                    Text(
-                        text = destination.title,
-                        fontSize = 12.sp,
-                        fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal,
-                        color = iconColor
-                    )
+                    if (selectedLanguage == SupportedLanguage.ENGLISH) {
+                        Text(
+                            text = bilingual.nativeText,
+                            fontSize = 11.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            color = iconColor,
+                            maxLines = 1
+                        )
+                    } else {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = bilingual.nativeText,
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = iconColor,
+                                maxLines = 1
+                            )
+                            Text(
+                                text = bilingual.englishLabel,
+                                fontSize = 9.sp,
+                                color = if (isSelected) iconColor.copy(alpha = 0.85f) else colors.textSecondary.copy(alpha = 0.7f),
+                                maxLines = 1
+                            )
+                        }
+                    }
 
-                    Spacer(modifier = Modifier.height(3.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
 
-                    // Minimal 4dp active dot indicator
+                    // Minimal active indicator dot
                     Box(
                         modifier = Modifier
-                            .size(if (isSelected) 4.dp else 0.dp)
+                            .size(if (isSelected) 3.dp else 0.dp)
                             .clip(CircleShape)
                             .background(if (isSelected) colors.accent else Color.Transparent)
                     )
